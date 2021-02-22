@@ -12,6 +12,89 @@ from matplotlib import cm
 from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
 import datetime
+import glob
+from scipy.io import FortranFile
+
+class DataLoader_s3d():
+
+    def __init__(self, data_loc, nx, ny, nz, nspec, batch_size, boxsize, a_ref = 347.2):
+
+        self.data_loc = data_loc
+        self.dims = [nx, ny, nz]
+        self.nspec = nspec
+        self.batch_size = batch_size
+        if(np.sum([ x%boxsize for x in self.dims]) > 0 ):
+            sys.exit("Data dimension {}*{}*{} not divisible by boxsize {}".format(nx, ny, nz, boxsize))
+        self.a_ref = a_ref
+        self.boxsize = boxsize
+        self._get_file_list()
+        self.nbatches = int(nx*ny*nz*len(self.flist)/(boxsize**3*batch_size))
+        #self.nfile_per_batch = int(boxsize**3*batch_size/(nx*ny*nz)) + 1
+        self.floc = 0
+        self.bloc = 0
+
+    def _get_file_list(self):
+
+        self.flist  = sorted(glob.glob(self.data_loc+'/field*'))
+
+    def readfile(self, loc):
+
+        f = FortranFile(self.flist[loc])
+        nx, ny, nz = self.dims[0], self.dims[1], self.dims[2]
+        time=f.read_reals(np.double)
+        time_step=f.read_reals(np.double)
+        time_save=f.read_reals(np.double)
+        
+        for L in range(self.nspec):
+           tmp=f.read_reals(np.single)
+
+        tmp=f.read_reals(np.single)
+        tmp=f.read_reals(np.single)
+        data = np.empty([nx, ny, nz, 3])
+        for i in range(3):
+            data[:,:,:,i]=f.read_reals(np.single).reshape((nx,ny,nz),order='F')*self.a_ref
+
+        return data
+
+    def reshape_array(self, shape, data):
+
+        nrows = int(data.shape[0]/shape[0])
+        ncols = int(data.shape[1]/shape[1])
+        ndims = int(data.shape[2]/shape[2])
+
+        reshaped = np.array([data[i*shape[0]:(i+1)*shape[0], \
+                j*shape[1]:(j+1)*shape[1],k*shape[2]:(k+1)*shape[2], :] for (i,j,k) in np.ndindex(nrows, ncols, ndims)])
+
+        return reshaped
+
+
+    def getData(self, key):
+
+        if(key > self.nbatches-1):
+            raise IndexError("Index out of maximum possible batches")
+        data = np.empty([self.batch_size, self.boxsize, self.boxsize, self.boxsize, 3])
+        ist=0
+        while True:
+            tmp = self.readfile(self.floc)
+            tmp = self.reshape_array([self.boxsize, self.boxsize, self.boxsize],tmp)
+            nsamp = min(self.batch_size-ist, tmp.shape[0]-self.bloc)
+            data[ist:nsamp+ist,:,:,:,:] = tmp[self.bloc:nsamp+self.bloc,:,:,:,:]
+            ist = ist+nsamp
+            self.bloc = self.bloc+nsamp
+            if(self.bloc==tmp.shape[0]):
+                self.bloc=0
+                self.floc=self.floc+1
+                if(self.floc == len(self.flist)):
+                    self.floc=0
+
+            if(ist==self.batch_size):
+                break
+
+        return data[:,:,:,:,0:1]
+
+    def getData2(self):
+        tmp = self.readfile(self.floc)
+        return tmp
 
 class UpSampling3D(Layer):
    
@@ -193,11 +276,11 @@ def RandomLoader_test(datapath,filter_nr,batch_size):
    
 def Image_generator(box1,box2,box3,output_name):
     fig,axs = plt.subplots(1,3)
-    axs[0].imshow(box1)
+    axs[0].imshow(box1,cmap='viridis')
     axs[0].set_title('Filtered')
-    axs[1].imshow(box2)
+    axs[1].imshow(box2,cmap='viridis')
     axs[1].set_title('PIESRGAN')
-    axs[2].imshow(box3)
+    axs[2].imshow(box3,cmap='viridis')
     axs[2].set_title('Unfiltered')
     plt.savefig(output_name)
     plt.show()
