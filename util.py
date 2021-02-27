@@ -14,21 +14,39 @@ import numpy as np
 import datetime
 import glob
 from scipy.io import FortranFile
+import time 
+from scipy.fft import fftn
+import multiprocessing
+import ctypes
+from multiprocessing import Pool
+import matplotlib.pyplot as plt
+#from PIESRGAN import PIESRGAN
+
+def do_normalisation(data,which, m1, m2):
+
+    if(which=='std'):
+        data = (data-m1)/m2
+        return data
+    if(which=='minmax'):
+        data = (data-m1)/(m2-m1)
+        return data
 
 class DataLoader_s3d():
 
-    def __init__(self, data_loc, nx, ny, nz, nspec, batch_size, boxsize, a_ref = 347.2):
+    def __init__(self, data_loc, nxg, nyg, nzg, nspec, batch_size, boxsize, a_ref = 347.2):
 
         self.data_loc = data_loc
-        self.dims = [nx, ny, nz]
+        self.nxg, self.nyg, self.nzg = nxg, nyg, nzg
+        self._get_unmorph()
         self.nspec = nspec
         self.batch_size = batch_size
-        if(np.sum([ x%boxsize for x in self.dims]) > 0 ):
+        if(np.sum([ x%boxsize for x in [self.nx, self.ny, self.nz]]) > 0 ):
             sys.exit("Data dimension {}*{}*{} not divisible by boxsize {}".format(nx, ny, nz, boxsize))
+            
         self.a_ref = a_ref
         self.boxsize = boxsize
         self._get_file_list()
-        self.nbatches = int(nx*ny*nz*len(self.flist)/(boxsize**3*batch_size))
+        self.nbatches = int(self.nx*self.ny*self.nz*len(self.flist)/(boxsize**3*batch_size))
         #self.nfile_per_batch = int(boxsize**3*batch_size/(nx*ny*nz)) + 1
         self.floc = 0
         self.bloc = 0
@@ -37,10 +55,20 @@ class DataLoader_s3d():
 
         self.flist  = sorted(glob.glob(self.data_loc+'/field*'))
 
+    def _get_unmorph(self):
+
+        procs = np.loadtxt(self.data_loc+'/unmorph.in')
+        self.npx, self.npy, self.npz = int(procs[0]), int(procs[1]), int(procs[2])
+        self.nx, self.ny, self.nz = self.nxg//self.npx, self.nyg//self.npy, self.nzg//self.npz
+
+    def reset_locs(self):
+        self.floc=0
+        self.bloc=0
+
     def readfile(self, loc):
 
         f = FortranFile(self.flist[loc])
-        nx, ny, nz = self.dims[0], self.dims[1], self.dims[2]
+        nx, ny, nz = self.nx, self.ny, self.nz
         time=f.read_reals(np.double)
         time_step=f.read_reals(np.double)
         time_save=f.read_reals(np.double)
@@ -50,7 +78,7 @@ class DataLoader_s3d():
 
         tmp=f.read_reals(np.single)
         tmp=f.read_reals(np.single)
-        data = np.empty([nx, ny, nz, 3])
+        data = np.empty([nx, ny, nz, 3], dtype=np.float32)
         for i in range(3):
             data[:,:,:,i]=f.read_reals(np.single).reshape((nx,ny,nz),order='F')*self.a_ref
 
@@ -90,7 +118,95 @@ class DataLoader_s3d():
             if(ist==self.batch_size):
                 break
 
-        return data[:,:,:,:,0:1]
+        return data[:,:,:,:,:]
+
+    def get_data_plane(self, plane):
+        # Only for X-Y planes
+        zid = int(plane//(self.nzg/self.npz ))
+        zloc = int(plane%(self.nzg/self.npz ))
+        print(zid, zloc, plane)
+        data = np.empty([self.nxg, self.nyg])
+        for yid in range(self.npy):
+            for xid in range(self.npx):
+                myid = zid*self.npx*self.npy + yid*self.npx + xid
+                filename = self.data_loc + '/field.' + "{0:0=6d}".format(myid)
+                idx = self.flist.index(filename)
+                xst = xid*self.nx
+                xen = (xid+1)*self.nx
+                yst = yid*self.ny
+                yen = (yid+1)*self.ny
+                data[xst:xen,yst:yen]  = self.readfile(idx)[:,:,zloc,0]
+        return data
+
+    def get_data_all(self):
+        u = np.empty([self.nxg, self.nyg, self.nzg,3], dtype = np.float32)
+
+        for zid in range(self.npz):
+            for yid in range(self.npy):
+                for xid in range(self.npx):
+                    myid = zid*self.npx*self.npy + yid*self.npx + xid
+                    fname = self.data_loc + '/field.' + "{0:0=6d}".format(myid)
+                    xsrt=xid*self.nx
+                    xend=(xid+1)*self.nx
+                    ysrt=yid*self.ny
+                    yend=(yid+1)*self.ny
+                    zsrt=zid*self.nz
+                    zend=(zid+1)*self.nz
+                    idx = self.flist.index(fname)
+                    t1 = time.time()
+                    u[xsrt:xend, ysrt:yend, zsrt:zend,:] = self.readfile(idx)
+                    print("Read " + '/field.'+ "{0:0=6d}".format(myid) + " in {} secs".format(time.time()-t1) )
+        return u
+
+    def read_parallel(self, workers):
+        #ush = np.zeros([1536, 1536, 1536, 3], dtype=np.float32)
+        
+        shared = multiprocessing.Array('f', self.nxg*self.nyg*self.nzg*3)
+        ush = np.frombuffer(shared.get_obj(), dtype=np.float32)
+        ush = ush.reshape(self.nxg,self.nyg,self.nzg,3)
+        print(ush.shape)
+        p = Pool(workers, initializer=self.init_shared, initargs=(ush,))
+        for zid in range(self.npz):
+            for yid in range(self.npy):
+                for xid in range(self.npx):
+                    xst, xen = xid*self.nx, (xid+1)*self.nx
+                    yst, yen = yid*self.ny, (yid+1)*self.ny
+                    zst, zen = zid*self.nz, (zid+1)*self.nz
+                    myid = zid*self.npx*self.npy + yid*self.npx + xid
+                    fname = self.data_loc + '/field.' + "{0:0=6d}".format(myid)
+                    idx = self.flist.index(fname)
+                    p.apply_async(read_single, args = (self.readfile, idx, xst, \
+                            xen, yst, yen, zst, zen, ), error_callback= print_error)
+        p.close()
+        p.join()
+        #plt.imshow(ush[0:500,0:500,0,0])
+        #plt.savefig('testfig.png')
+        #print("HERE", ush[0,0,0,0], ush[1,100,0,0])
+        return ush
+
+    def init_shared(self,shared_arr_):
+        global ush
+        ush = shared_arr_
+
+    def get_norm_constants(self):
+
+        if(os.path.isfile('./mins.dat')):
+            mins = np.loadtxt('mins.dat')
+            maxs = np.loadtxt('maxs.dat')
+            return mins, maxs
+
+        means = np.zeros(3)
+        stds = np.zeros(3)
+        mins = np.zeros(3)
+        maxs = np.zeros(3)
+
+        for i in range(self.nbatches):
+            data = self.readfile(i)
+            mins = np.minimum(mins, np.min(data,axis=(0,1,2)))
+            maxs = np.maximum(maxs, np.max(data,axis=(0,1,2)))
+        np.savetxt('./mins.dat', mins)
+        np.savetxt('./maxs.dat', maxs)
+        return mins, maxs
 
     def getData2(self):
         tmp = self.readfile(self.floc)
@@ -275,16 +391,45 @@ def RandomLoader_test(datapath,filter_nr,batch_size):
   
    
 def Image_generator(box1,box2,box3,output_name):
-    fig,axs = plt.subplots(1,3)
-    axs[0].imshow(box1,cmap='viridis')
+    fig,axs = plt.subplots(1,3, figsize=(15,15))
+    cmap = 'seismic'
+    #axs[0].contourf(box1, levels=40)
+    '''
+    plt.subplot(1,3,1)
+    plt.title('Filtered')
+    plt.contourf(box1)
+    plt.colorbar()
+    plt.subplot(1,3,2)
+    plt.title('PIESRGAN')
+    plt.contourf(box2)
+    plt.colorbar()
+    plt.subplot(1,3,3)
+    plt.title('DNS')
+    plt.contourf(box3)
+    plt.colorbar()
+    plt.tight_layout()
+    '''
+    im=axs[1].imshow(box2,cmap=cmap)
+    clim = im.properties()['clim']
+    axs[0].imshow(box1,cmap=cmap, clim=clim)
     axs[0].set_title('Filtered')
-    axs[1].imshow(box2,cmap='viridis')
+    #axs[1].contourf(box2, levels=40)
     axs[1].set_title('PIESRGAN')
-    axs[2].imshow(box3,cmap='viridis')
+    axs[2].imshow(box3,cmap=cmap, clim=clim)
+    #axs[2].contourf(box3, levels=40)
     axs[2].set_title('Unfiltered')
-    plt.savefig(output_name)
+    fig.colorbar(im, ax=axs.ravel().tolist(), shrink=0.5)
+    plt.savefig(output_name, dpi=500)
     plt.show()
     
-    
+def read_single(readfile, idx, xst, xen, yst, yen, zst, zen):
+        t1 = time.time()
+        ush[xst:xen,yst:yen, zst:zen,:] = readfile(idx)
+        #ush[0,0,0,0] = idx
+        #print(ush[0,0,0,0])
+        print("Read file in {} secs".format(time.time()-t1))
+        return
 
-      
+def print_error(err):
+    print(err)
+    return
