@@ -120,12 +120,12 @@ class DataLoader_s3d():
 
         return data[:,:,:,:,:]
 
-    def get_data_plane(self, plane):
+    def get_data_plane(self, plane, channels):
         # Only for X-Y planes
         zid = int(plane//(self.nzg/self.npz ))
         zloc = int(plane%(self.nzg/self.npz ))
         print(zid, zloc, plane)
-        data = np.empty([self.nxg, self.nyg])
+        data = np.empty([self.nxg, self.nyg, channels])
         for yid in range(self.npy):
             for xid in range(self.npx):
                 myid = zid*self.npx*self.npy + yid*self.npx + xid
@@ -135,7 +135,7 @@ class DataLoader_s3d():
                 xen = (xid+1)*self.nx
                 yst = yid*self.ny
                 yen = (yid+1)*self.ny
-                data[xst:xen,yst:yen]  = self.readfile(idx)[:,:,zloc,0]
+                data[xst:xen,yst:yen,:]  = self.readfile(idx)[:,:,zloc,0:channels]
         return data
 
     def get_data_all(self):
@@ -165,7 +165,8 @@ class DataLoader_s3d():
         ush = np.frombuffer(shared.get_obj(), dtype=np.float32)
         ush = ush.reshape(self.nxg,self.nyg,self.nzg,3)
         print(ush.shape)
-        p = Pool(workers, initializer=self.init_shared, initargs=(ush,))
+        t1=time.time()
+        p = Pool(workers, initializer=self.init_shared_s3d, initargs=(ush,))
         for zid in range(self.npz):
             for yid in range(self.npy):
                 for xid in range(self.npx):
@@ -175,18 +176,29 @@ class DataLoader_s3d():
                     myid = zid*self.npx*self.npy + yid*self.npx + xid
                     fname = self.data_loc + '/field.' + "{0:0=6d}".format(myid)
                     idx = self.flist.index(fname)
-                    p.apply_async(read_single, args = (self.readfile, idx, xst, \
+                    p.apply_async(self.read_single, args = (idx, xst, \
                             xen, yst, yen, zst, zen, ), error_callback= print_error)
         p.close()
         p.join()
         #plt.imshow(ush[0:500,0:500,0,0])
         #plt.savefig('testfig.png')
         #print("HERE", ush[0,0,0,0], ush[1,100,0,0])
+        print("Total read time {} secs".format(time.time()-t1))
         return ush
 
-    def init_shared(self,shared_arr_):
+    def init_shared_s3d(self,shared_arr_):
         global ush
         ush = shared_arr_
+
+    def read_single(self,idx, xst, xen, yst, yen, zst, zen):
+        t1 = time.time()
+        global ush
+        ush[xst:xen,yst:yen, zst:zen,:] = self.readfile(idx)
+        #ush[0,0,0,0] = idx
+        #print(ush[0,0,0,0])
+        print("Read file in {} secs".format(time.time()-t1))
+        return
+
 
     def get_norm_constants(self):
 

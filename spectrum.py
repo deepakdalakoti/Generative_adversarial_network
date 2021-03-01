@@ -35,9 +35,7 @@ def do_spectrum(data_loader, u_k, xmax, xmin, ymax, ymin, zmax, zmin, xid, yid, 
         #kx = fftfreq(data_loader.nxg, (xmax-xmin)/data_loader.nxg)*2.0*np.pi
         #ky = fftfreq(data_loader.nyg, (ymax-ymin)/data_loader.nyg)*2.0*np.pi
         #kz = fftfreq(data_loader.nzg, (zmax-zmin)/data_loader.nzg)*2.0*np.pi
-
         t1 = time.time()
-        tkeT = 0.0 
         for k in range(data_loader.nz):
                 for j in range(data_loader.ny):
                     for i in range(data_loader.nx):
@@ -47,16 +45,12 @@ def do_spectrum(data_loader, u_k, xmax, xmin, ymax, ymin, zmax, zmin, xid, yid, 
                         tkeh[ik] = tkeh[ik] + np.real(0.5*(u_k[i,j,k,0]*np.conj(u_k[i,j,k,0]) + \
                                    u_k[i,j,k,1]*np.conj(u_k[i,j,k,1]) + \
                                    u_k[i,j,k,2]*np.conj(u_k[i,j,k,2])))
-        tkeT = np.sum(tkeh)
         print("Loop took {} secs".format(time.time()-t1))
-
-        return [tkeh/del_k, tkeT]
+        return tkeh/del_k
 
 def log_results(res):
     global energy
-    global total_ke
-    energy = energy+res[0]
-    total_ke = total_ke + res[1]
+    energy = energy+res
     return 
 
 def print_error(err):
@@ -79,7 +73,7 @@ def get_velocity_spectrum(data_loader, xmax, xmin, ymax, ymin, zmax, zmin, worke
         t1 = time.time()
         u_k[:,:,:,L] = fftn(u[:,:,:,L], workers=-1)/nt
         print("FFT finished in {} secs".format(time.time()-t1))
-    print("Total KE after fft ", np.sum(np.real(u_k*np.conj(u_k))))
+    #print("Total KE after fft ", np.sum(np.real(u_k*np.conj(u_k))))
     nhx, nhy, nhz = data_loader.nxg/2+1, data_loader.nyg/2+1, data_loader.nzg/2+1
     nk = max([nhx, nhy, nhz])
     factx = 2.0*np.pi/(xmax-xmin)
@@ -92,12 +86,9 @@ def get_velocity_spectrum(data_loader, xmax, xmin, ymax, ymin, zmax, zmin, worke
 
     kmax = np.sqrt(kx_max**2+ky_max**2+kz_max**2)
     del_k = kmax/(nk-1)
-    #print("Kmax", kmax, kx_max, ky_max, kz_max,  nhx)
     wavenumbers = np.arange(0,nk)*del_k
 
     global energy 
-    global total_ke
-    total_ke=0.0
     energy=np.zeros(int(nk))
     
     p = Pool(workers)
@@ -115,6 +106,5 @@ def get_velocity_spectrum(data_loader, xmax, xmin, ymax, ymin, zmax, zmin, worke
     p.join()
     np.savetxt('wvm', wavenumbers)
     np.savetxt('energy', energy)
-    print("Final total Ke", total_ke)
     return wavenumbers, energy
 

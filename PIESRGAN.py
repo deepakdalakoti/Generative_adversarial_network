@@ -667,40 +667,40 @@ if __name__ == '__main__':
     #     batch_size=32,
     #)
 # Deepak
-    gan.train_generator(
-         epochs=10,
-         boxsize=16,
-         datapath_train='/scratch/w47/share/IsotropicTurb',
-         datapath_test='/scratch/w47/share/IsotropicTurb',
-         batch_size=32,
-         steps_per_validation=1,
-         workers=1,
-         use_multiprocessing=True
-    )
+    #gan.train_generator(
+    #     epochs=10,
+    #     boxsize=16,
+    #     datapath_train='/scratch/w47/share/IsotropicTurb',
+    #     datapath_test='/scratch/w47/share/IsotropicTurb',
+    #     batch_size=32,
+    #     steps_per_validation=1,
+    #     workers=1,
+    #     use_multiprocessing=True
+    #)
 
-    '''
+    
     t1=time.time()
-    gan.load_weights(generator_weights='./data/weights/_generator_idx460.h5')
+    gan.load_weights(generator_weights='./data/weights/_generator_idx900.h5')
     print("Loading weights took {} secs".format(time.time()-t1))
-    train_loader = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/Filt_8x/filt_s-1.5000E-05', 1536, 1536, 1536, 2, 32, 16)
-    train_loader_hr = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/DNS/s-1.5000E-05', 1536, 1536, 1536, 2, 32, 16)
+    train_loader = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/Filt_8x/filt_s-1.5000E-05', 1536, 1536, 1536, 2, 144, 16)
+    train_loader_hr = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/DNS/s-1.5000E-05', 1536, 1536, 1536, 2, 144, 16)
     mins, maxs = train_loader_hr.get_norm_constants()
     mins = mins[0]
     maxs = maxs[0]
 
-    #data = do_normalisation(train_loader.getData(0), 'minmax', mins, maxs)
-    #data_hr = do_normalisation(train_loader_hr.getData(0), 'minmax', mins, maxs)
-    
-    data = do_normalisation(train_loader.get_data_plane(0), 'minmax', mins, maxs)
-    data_hr = do_normalisation(train_loader_hr.get_data_plane(0), 'minmax', mins, maxs)
-    pred = gan.generator.predict(data[None,0:1000,0:1000,None,None])
-    print(data.shape)
+    data = do_normalisation(train_loader.getData(0), 'minmax', mins, maxs)
+    data_hr = do_normalisation(train_loader_hr.getData(0), 'minmax', mins, maxs)
+    #print(data.shape) 
+    #data = do_normalisation(train_loader.get_data_plane(0,3), 'minmax', mins, maxs)
+    #data_hr = do_normalisation(train_loader_hr.get_data_plane(0,3), 'minmax', mins, maxs)
+    #pred = gan.generator.predict(data[None,0:1000,0:1000,None,:])
+    #print(data.shape)
     t1=time.time()
-    #pred = gan.generator.predict(data[0,:,:,:,:])
+    pred = gan.generator.predict(data[:,:,:,:,:], workers=4, use_multiprocessing=True)
     print("Time to predict {}".format(time.time()-t1))
     print(pred.shape)
-    '''
-    #Image_generator(data[0:1000,0:1000],pred[0,0:1000,0:1000,0,0],data_hr[0:1000,0:1000],'testfig.pdf')        
+    #Image_generator(data[0:1000,0:1000,0],pred[0,0:1000,0:1000,0,0],data_hr[0:1000,0:1000,0],'testfig.pdf')        
+    #Image_generator(data[0,:,:,0,0],pred[0,:,:,0,0],data_hr[0,:,:,0,0],'testfig.pdf')        
     #print(">> Generator trained based on MSE")
     '''Save pretrained generator'''
     #gan.generator.save('./data/weights/Doctor_gan.h5')
