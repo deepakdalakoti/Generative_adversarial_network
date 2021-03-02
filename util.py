@@ -31,6 +31,16 @@ def do_normalisation(data,which, m1, m2):
         data = (data-m1)/(m2-m1)
         return data
 
+def do_inverse_normalisation(data,which, m1, m2):
+
+    if(which=='std'):
+        data = data*m2 + m1
+        return data
+    if(which=='minmax'):
+        data = data*(m2-m1) + m1
+        return data
+
+
 class DataLoader_s3d():
 
     def __init__(self, data_loc, nxg, nyg, nzg, nspec, batch_size, boxsize, a_ref = 347.2):
@@ -205,6 +215,8 @@ class DataLoader_s3d():
         if(os.path.isfile('./mins.dat')):
             mins = np.loadtxt('mins.dat')
             maxs = np.loadtxt('maxs.dat')
+            self.mins = mins
+            self.maxs = maxs
             return mins, maxs
 
         means = np.zeros(3)
@@ -218,6 +230,8 @@ class DataLoader_s3d():
             maxs = np.maximum(maxs, np.max(data,axis=(0,1,2)))
         np.savetxt('./mins.dat', mins)
         np.savetxt('./maxs.dat', maxs)
+        self.mins = mins
+        self.maxs = maxs
         return mins, maxs
 
     def getData2(self):

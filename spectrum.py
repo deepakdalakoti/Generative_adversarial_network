@@ -5,7 +5,7 @@ from multiprocessing import Pool
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.fftpack import fftfreq
-
+# TODO: Potential speedup by changing loop order according to mem layout
 def do_spectrum(data_loader, u_k, xmax, xmin, ymax, ymin, zmax, zmin, xid, yid, zid):
 
         nt = data_loader.nxg*data_loader.nyg*data_loader.nzg
