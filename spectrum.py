@@ -5,6 +5,7 @@ from multiprocessing import Pool
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.fftpack import fftfreq
+from util import DataLoader_s3d
 # TODO: Potential speedup by changing loop order according to mem layout
 def do_spectrum(data_loader, u_k, xmax, xmin, ymax, ymin, zmax, zmin, xid, yid, zid):
 
@@ -36,9 +37,9 @@ def do_spectrum(data_loader, u_k, xmax, xmin, ymax, ymin, zmax, zmin, xid, yid, 
         #ky = fftfreq(data_loader.nyg, (ymax-ymin)/data_loader.nyg)*2.0*np.pi
         #kz = fftfreq(data_loader.nzg, (zmax-zmin)/data_loader.nzg)*2.0*np.pi
         t1 = time.time()
-        for k in range(data_loader.nz):
+        for i in range(data_loader.nx):
                 for j in range(data_loader.ny):
-                    for i in range(data_loader.nx):
+                    for k in range(data_loader.nz):
 
                         mag_k = np.sqrt(kx[i]**2 + ky[j]**2 + kz[k]**2)
                         ik = int(min(max(np.floor(mag_k/del_k),0.0),nk-1))
@@ -57,7 +58,7 @@ def print_error(err):
     print("Fucked", err)
     return
 
-def get_velocity_spectrum(data_loader, xmax, xmin, ymax, ymin, zmax, zmin, workers):
+def get_velocity_spectrum(data_loader, xmax, xmin, ymax, ymin, zmax, zmin, workers, pref=''):
     # Get the spectrum box by box as saved in s3d savefile
     # Taken from s3d
     
@@ -104,7 +105,20 @@ def get_velocity_spectrum(data_loader, xmax, xmin, ymax, ymin, zmax, zmin, worke
 
     p.close()
     p.join()
-    np.savetxt('wvm', wavenumbers)
-    np.savetxt('energy', energy)
-    return wavenumbers, energy
+    spectrum = np.zeros([int(nk),2])
+    spectrum[:,0]=wavenumbers
+    spectrum[:,1]=energy
+    np.savetxt(pref+'spectrum', spectrum)
+    return spectrum
+
+if __name__=='__main__':
+    DNS = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/DNS/s-2.4500E-05', 1536, 1536, 1536, 2, 16, 32)
+    spectrum = get_velocity_spectrum(DNS, 5e-3, 0, 5e-3 , 0, 5e-3, 0, 48, 'DNS_s-2.4500E-05_')
+    Filt = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/Filt_8x/filt_s-2.4500E-05', 1536, 1536, 1536, 2, 16, 32)
+    spectrum = get_velocity_spectrum(Filt, 5e-3, 0, 5e-3, 0, 5e-3, 0, 48, 'Filt_8x_s-2.4500E-05_')
+
+    DNS = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/DNS/s-1.5000E-05', 1536, 1536, 1536, 2, 16, 32)
+    spectrum = get_velocity_spectrum(DNS, 5e-3, 0, 5e-3 , 0, 5e-3, 0, 48, 'DNS_s-1.5000E-05_')
+    Filt = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/Filt_8x/filt_s-1.5000E-05', 1536, 1536, 1536, 2, 16, 32
+    spectrum = get_velocity_spectrum(Filt, 5e-3, 0, 5e-3, 0, 5e-3, 0, 48, 'Filt_8x_s-1.5000E-05_')
 

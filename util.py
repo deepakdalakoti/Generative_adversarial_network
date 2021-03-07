@@ -130,6 +130,29 @@ class DataLoader_s3d():
 
         return data[:,:,:,:,:]
 
+    def getRandomData(self):
+        data = np.empty([self.batch_size, self.boxsize, self.boxsize, self.boxsize, 3])
+        ist=0
+        loc  = np.random.randint(0,len(self.flist))
+        bloc = np.random.randint(0, int(self.nx*self.ny*self.nz/self.boxsize**3))
+        while True:
+            tmp = self.readfile(loc)
+            tmp = self.reshape_array([self.boxsize, self.boxsize, self.boxsize],tmp)
+            nsamp = min(self.batch_size-ist, tmp.shape[0]-bloc)
+            data[ist:nsamp+ist,:,:,:,:] = tmp[bloc:nsamp+bloc,:,:,:,:]
+            ist = ist+nsamp
+            bloc = bloc+nsamp
+            if(bloc==tmp.shape[0]):
+                bloc=0     # Although random, I want to be continous in the physical space
+                loc=loc+1  # so increment by one rather than taking random nums again
+                if(self.floc == len(self.flist)):
+                    self.floc=0
+
+            if(ist==self.batch_size):
+                break
+
+        return data
+
     def get_data_plane(self, plane, channels):
         # Only for X-Y planes
         zid = int(plane//(self.nzg/self.npz ))
