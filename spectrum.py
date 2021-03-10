@@ -49,6 +49,38 @@ def do_spectrum(data_loader, u_k, xmax, xmin, ymax, ymin, zmax, zmin, xid, yid, 
         print("Loop took {} secs".format(time.time()-t1))
         return tkeh/del_k
 
+def do_spectrum_slice(data_loader, u_k, xmax, xmin, ymax, ymin, xid, yid):
+
+        nt = data_loader.nxg*data_loader.nyg
+        nhx, nhy = data_loader.nxg/2+1, data_loader.nyg/2+1
+        nk = max([nhx, nhy])
+        factx = 2.0*np.pi/(xmax-xmin)
+        facty = 2.0*np.pi/(ymax-ymin)
+
+        kx_max = (nhx-1)*factx
+        ky_max = (nhy-1)*facty
+
+        kmax = np.sqrt(kx_max**2+ky_max**2)
+
+        tkeh = np.zeros(int(nk))
+        del_k = kmax/(nk-1) 
+
+        # Take care of fortran vs python indices
+        i_g = np.array([xid*data_loader.nx + i + 1 for i in range(data_loader.nx)])
+        j_g = np.array([yid*data_loader.ny + i + 1 for i in range(data_loader.ny)])
+        kx = np.where(i_g > nhx, -(data_loader.nxg+1-i_g)*factx, (i_g-1)*factx)
+        ky = np.where(j_g > nhy, -(data_loader.nyg+1-j_g)*facty, (j_g-1)*facty)
+        t1 = time.time()
+        for i in range(data_loader.nx):
+                for j in range(data_loader.ny):
+                        mag_k = np.sqrt(kx[i]**2 + ky[j]**2)
+                        ik = int(min(max(np.floor(mag_k/del_k),0.0),nk-1))
+                        for L in range(data_loader.channels):
+                            tkeh[ik] = tkeh[ik] + np.real(0.5*(u_k[i,j,L]*np.conj(u_k[i,j,L]))) 
+        print("Loop took {} secs".format(time.time()-t1))
+        return tkeh/del_k
+
+
 def log_results(res):
     global energy
     energy = energy+res
@@ -111,6 +143,72 @@ def get_velocity_spectrum(data_loader, xmax, xmin, ymax, ymin, zmax, zmin, worke
     np.savetxt(pref+'spectrum', spectrum)
     return spectrum
 
+def get_velocity_spectrum_slice(data_loader, xmax, xmin, ymax, ymin, plane, workers, pref=''):
+    # Get the spectrum box by box as saved in s3d savefile
+    # Taken from s3d
+    
+    data_loader.reset_locs()
+
+    t1 = time.time()
+    udata = np.zeros([data_loader.nxg,data_loader.nyg,data_loader.boxsize,data_loader.channels], dtype=np.float32)
+    p = Pool(workers)
+    slo = int(max(plane-data_loader.boxsize/2,0))
+    shi = int(min(data_loader.boxsize+slo,data_loader.nzg-1))
+    if(shi-slo < data_loader.boxsize):
+        slo = int(data_loader.boxsize-(shi-slo))
+
+    res=[]
+
+    for i in range(slo,shi):
+        r=p.apply_async(data_loader.get_data_plane, args=(i,), error_callback=print_error)
+        res.append([r,int(i-slo)])
+    for i in range(len(res)):
+        udata[:,:,res[i][1],:] = res[i][0].get()
+    p.close()
+    p.join()
+
+    print("Total data load time {} secs".format(time.time()-t1))
+
+    nt = data_loader.nxg*data_loader.nyg
+    u_k = np.empty([data_loader.nxg, data_loader.nyg,data_loader.channels], dtype=complex)
+    for L in range(data_loader.channels):
+        t1 = time.time()
+        u_k[:,:,L] = fftn(udata[:,:,int(data_loader.boxsize/2),L], workers=-1)/nt
+        print("FFT finished in {} secs".format(time.time()-t1))
+    #print("Total KE after fft ", np.sum(np.real(u_k*np.conj(u_k))))
+    nhx, nhy = data_loader.nxg/2+1, data_loader.nyg/2+1
+    nk = max([nhx, nhy])
+    factx = 2.0*np.pi/(xmax-xmin)
+    facty = 2.0*np.pi/(ymax-ymin)
+
+    kx_max = (nhx-1)*factx
+    ky_max = (nhy-1)*facty
+
+    kmax = np.sqrt(kx_max**2+ky_max**2)
+    del_k = kmax/(nk-1)
+    wavenumbers = np.arange(0,nk)*del_k
+
+    global energy 
+    energy=np.zeros(int(nk))
+    
+    p = Pool(workers)
+    for yid in range(data_loader.npy):
+            for xid in range(data_loader.npx):
+                xst, xen = xid*data_loader.nx, (xid+1)*data_loader.nx
+                yst, yen = yid*data_loader.ny, (yid+1)*data_loader.ny
+
+                p.apply_async(do_spectrum_slice, args = (data_loader, u_k[xst:xen,yst:yen,:], xmax, xmin, ymax, ymin, xid, yid, ), \
+                      callback=log_results, error_callback= print_error)
+
+    p.close()
+    p.join()
+    spectrum = np.zeros([int(nk),2])
+    spectrum[:,0]=wavenumbers
+    spectrum[:,1]=energy
+    np.savetxt(pref+'spectrum', spectrum)
+    return spectrum
+
+
 if __name__=='__main__':
     DNS = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/DNS/s-2.4500E-05', 1536, 1536, 1536, 2, 16, 32)
     spectrum = get_velocity_spectrum(DNS, 5e-3, 0, 5e-3 , 0, 5e-3, 0, 48, 'DNS_s-2.4500E-05_')
@@ -119,6 +217,6 @@ if __name__=='__main__':
 
     DNS = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/DNS/s-1.5000E-05', 1536, 1536, 1536, 2, 16, 32)
     spectrum = get_velocity_spectrum(DNS, 5e-3, 0, 5e-3 , 0, 5e-3, 0, 48, 'DNS_s-1.5000E-05_')
-    Filt = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/Filt_8x/filt_s-1.5000E-05', 1536, 1536, 1536, 2, 16, 32
+    Filt = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/Filt_8x/filt_s-1.5000E-05', 1536, 1536, 1536, 2, 16, 32)
     spectrum = get_velocity_spectrum(Filt, 5e-3, 0, 5e-3, 0, 5e-3, 0, 48, 'Filt_8x_s-1.5000E-05_')
 

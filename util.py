@@ -43,13 +43,14 @@ def do_inverse_normalisation(data,which, m1, m2):
 
 class DataLoader_s3d():
 
-    def __init__(self, data_loc, nxg, nyg, nzg, nspec, batch_size, boxsize, a_ref = 347.2):
+    def __init__(self, data_loc, nxg, nyg, nzg, nspec, batch_size, boxsize, channels, a_ref = 347.2):
 
         self.data_loc = data_loc
         self.nxg, self.nyg, self.nzg = nxg, nyg, nzg
         self._get_unmorph()
         self.nspec = nspec
         self.batch_size = batch_size
+        self.channels = channels
         if(np.sum([ x%boxsize for x in [self.nx, self.ny, self.nz]]) > 0 ):
             sys.exit("Data dimension {}*{}*{} not divisible by boxsize {}".format(nx, ny, nz, boxsize))
             
@@ -57,10 +58,11 @@ class DataLoader_s3d():
         self.boxsize = boxsize
         self._get_file_list()
         self.nbatches = int(self.nx*self.ny*self.nz*len(self.flist)/(boxsize**3*batch_size))
+        self.nbatches_plane = int(self.nxg*self.nyg*self.boxsize/(boxsize**3*batch_size))
         #self.nfile_per_batch = int(boxsize**3*batch_size/(nx*ny*nz)) + 1
         self.floc = 0
         self.bloc = 0
-
+        self.init_train=0
     def _get_file_list(self):
 
         self.flist  = sorted(glob.glob(self.data_loc+'/field*'))
@@ -88,8 +90,8 @@ class DataLoader_s3d():
 
         tmp=f.read_reals(np.single)
         tmp=f.read_reals(np.single)
-        data = np.empty([nx, ny, nz, 3], dtype=np.float32)
-        for i in range(3):
+        data = np.empty([nx, ny, nz, self.channels], dtype=np.float32)
+        for i in range(self.channels):
             data[:,:,:,i]=f.read_reals(np.single).reshape((nx,ny,nz),order='F')*self.a_ref
 
         return data
@@ -110,7 +112,7 @@ class DataLoader_s3d():
 
         if(key > self.nbatches-1):
             raise IndexError("Index out of maximum possible batches")
-        data = np.empty([self.batch_size, self.boxsize, self.boxsize, self.boxsize, 3])
+        data = np.empty([self.batch_size, self.boxsize, self.boxsize, self.boxsize, self.channels], dtype=np.float32)
         ist=0
         while True:
             tmp = self.readfile(self.floc)
@@ -128,10 +130,39 @@ class DataLoader_s3d():
             if(ist==self.batch_size):
                 break
 
-        return data[:,:,:,:,:]
+        return data
+
+    def getTrainData_plane(self, workers, plane, idx):
+
+        if(idx > self.nbatches_plane-1):
+            raise IndexError("Index out of maximum possible batches")
+        
+        if(not self.init_train):
+            print(self.init_train,"INIT")
+            self.udata = np.zeros([self.nxg,self.nyg,self.boxsize,self.channels], dtype=np.float32)
+            slo = int(max(plane-self.boxsize/2,0))
+            shi = int(min(self.boxsize+slo,self.nzg-1))
+            if(shi-slo < self.boxsize):
+                slo = int(self.boxsize-(shi-slo))
+
+            res=[]
+
+            p = Pool(workers)
+            for i in range(slo,shi):
+                r=p.apply_async(self.get_data_plane, args=(i,), error_callback=print_error)
+                res.append([r,int(i-slo)])
+            for i in range(len(res)):
+                self.udata[:,:,res[i][1],:] = res[i][0].get()
+            p.close()
+            p.join()
+
+            self.udata = self.reshape_array([self.boxsize, self.boxsize, self.boxsize], self.udata)
+            self.init_train=1
+
+        return self.udata[idx*self.batch_size:(idx+1)*self.batch_size,:,:,:,:]
 
     def getRandomData(self):
-        data = np.empty([self.batch_size, self.boxsize, self.boxsize, self.boxsize, 3])
+        data = np.empty([self.batch_size, self.boxsize, self.boxsize, self.boxsize, self.channels])
         ist=0
         loc  = np.random.randint(0,len(self.flist))
         bloc = np.random.randint(0, int(self.nx*self.ny*self.nz/self.boxsize**3))
@@ -153,12 +184,12 @@ class DataLoader_s3d():
 
         return data
 
-    def get_data_plane(self, plane, channels):
+    def get_data_plane(self, plane):
         # Only for X-Y planes
         zid = int(plane//(self.nzg/self.npz ))
         zloc = int(plane%(self.nzg/self.npz ))
-        print(zid, zloc, plane)
-        data = np.empty([self.nxg, self.nyg, channels])
+        print("Reading plane {}".format(plane))
+        data = np.empty([self.nxg, self.nyg, self.channels])
         for yid in range(self.npy):
             for xid in range(self.npx):
                 myid = zid*self.npx*self.npy + yid*self.npx + xid
@@ -168,11 +199,11 @@ class DataLoader_s3d():
                 xen = (xid+1)*self.nx
                 yst = yid*self.ny
                 yen = (yid+1)*self.ny
-                data[xst:xen,yst:yen,:]  = self.readfile(idx)[:,:,zloc,0:channels]
+                data[xst:xen,yst:yen,:]  = self.readfile(idx)[:,:,zloc,0:self.channels]
         return data
 
     def get_data_all(self):
-        u = np.empty([self.nxg, self.nyg, self.nzg,3], dtype = np.float32)
+        u = np.empty([self.nxg, self.nyg, self.nzg, self.channels], dtype = np.float32)
 
         for zid in range(self.npz):
             for yid in range(self.npy):
@@ -194,9 +225,9 @@ class DataLoader_s3d():
     def read_parallel(self, workers):
         #ush = np.zeros([1536, 1536, 1536, 3], dtype=np.float32)
         
-        shared = multiprocessing.Array('f', self.nxg*self.nyg*self.nzg*3)
+        shared = multiprocessing.Array('f', self.nxg*self.nyg*self.nzg*self.channels)
         ush = np.frombuffer(shared.get_obj(), dtype=np.float32)
-        ush = ush.reshape(self.nxg,self.nyg,self.nzg,3)
+        ush = ush.reshape(self.nxg,self.nyg,self.nzg,self.channels)
         print(ush.shape)
         t1=time.time()
         p = Pool(workers, initializer=self.init_shared_s3d, initargs=(ush,))
@@ -213,9 +244,6 @@ class DataLoader_s3d():
                             xen, yst, yen, zst, zen, ), error_callback= print_error)
         p.close()
         p.join()
-        #plt.imshow(ush[0:500,0:500,0,0])
-        #plt.savefig('testfig.png')
-        #print("HERE", ush[0,0,0,0], ush[1,100,0,0])
         print("Total read time {} secs".format(time.time()-t1))
         return ush
 
@@ -227,35 +255,35 @@ class DataLoader_s3d():
         t1 = time.time()
         global ush
         ush[xst:xen,yst:yen, zst:zen,:] = self.readfile(idx)
-        #ush[0,0,0,0] = idx
-        #print(ush[0,0,0,0])
         print("Read file in {} secs".format(time.time()-t1))
         return
 
 
-    def get_norm_constants(self):
+    def get_norm_constants(self, workers):
 
-        if(os.path.isfile('./mins.dat')):
-            mins = np.loadtxt('mins.dat')
-            maxs = np.loadtxt('maxs.dat')
-            self.mins = mins
-            self.maxs = maxs
-            return mins, maxs
+        if(os.path.isfile('./norm_const.dat')):
+            const = np.loadtxt('norm_const.dat')
+            self.mins = const[0]
+            self.maxs = const[1]
+            self.mean = const[2]
+            self.std  = const[3]
+            return 
 
-        means = np.zeros(3)
-        stds = np.zeros(3)
-        mins = np.zeros(3)
-        maxs = np.zeros(3)
+        const = np.zeros(4)
 
-        for i in range(self.nbatches):
-            data = self.readfile(i)
-            mins = np.minimum(mins, np.min(data,axis=(0,1,2)))
-            maxs = np.maximum(maxs, np.max(data,axis=(0,1,2)))
-        np.savetxt('./mins.dat', mins)
-        np.savetxt('./maxs.dat', maxs)
-        self.mins = mins
-        self.maxs = maxs
-        return mins, maxs
+        # For isotropic turbulence, I am taking same mean for all data
+        data = self.read_parallel(workers)
+        const[0] = np.min(data)
+        const[1] = np.max(data)
+        const[2] = np.mean(data)
+        const[3] = np.sqrt(np.mean(data**2)-const[2]**2)
+
+        np.savetxt('./norm_const.dat',const)
+        self.mins = const[0]
+        self.maxs = const[1]
+        self.mean = const[2]
+        self.std  = const[3]
+        return 
 
     def getData2(self):
         tmp = self.readfile(self.floc)

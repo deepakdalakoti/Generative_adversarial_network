@@ -122,7 +122,7 @@ class PIESRGAN():
                 self.piesrgan = self.build_piesrgan()
                 #self.compile_discriminator(self.RaGAN)
                 #self.compile_piesrgan(self.piesrgan)
-                
+                    
     def save_weights(self, filepath, e=None):
         """Save the generator and discriminator networks"""
         self.generator.save_weights("{}_generator_{}X_epoch{}.h5".format(filepath, self.upscaling_factor, e))
@@ -268,9 +268,10 @@ class PIESRGAN():
                 tf.losses.mean_squared_error(grad_hr_3,grad_sr_3))
             # Compute the RaGAN loss
             fake_logit, real_logit = self.RaGAN([img_hr, generated_hr])
+            BCE = tf.keras.losses.BinaryCrossentropy(reduction=tf.keras.losses.Reduction.SUM)
             gen_loss = K.mean(
-                K.binary_crossentropy(K.zeros_like(real_logit), real_logit) +
-                K.binary_crossentropy(K.ones_like(fake_logit), fake_logit))
+                BCE(tf.zeros_like(real_logit), real_logit) +
+                BCE(tf.ones_like(fake_logit), fake_logit))
             # Compute the pixel_loss with L1 loss
             pixel_loss = K.mean(tf.losses.mean_squared_error(generated_hr, img_hr))
             return [grad_loss, gen_loss, pixel_loss]
@@ -370,20 +371,23 @@ class PIESRGAN():
             loss=tf.losses.absolute_difference(y_true,y_pred)
             return loss*0.01
         def grad_loss(y_true,y_pred):
-            grad_hr_1 = tf.py_function(grad1,[y_true],tf.float32)
-            grad_hr_2 = tf.py_function(grad2,[y_true],tf.float32)
-            grad_hr_3 = tf.py_function(grad3,[y_true],tf.float32)
-            grad_sr_1 = tf.py_function(grad1,[y_pred],tf.float32)
-            grad_sr_2 = tf.py_function(grad2,[y_pred],tf.float32)
-            grad_sr_3 = tf.py_function(grad3,[y_pred],tf.float32)
+            grad_hr_1 = tf.compat.v1.py_func(grad1,[y_true],tf.float32)
+            grad_hr_2 = tf.compat.v1.py_func(grad2,[y_true],tf.float32)
+            grad_hr_3 = tf.compat.v1.py_func(grad3,[y_true],tf.float32)
+            grad_sr_1 = tf.compat.v1.py_func(grad1,[y_pred],tf.float32)
+            grad_sr_2 = tf.compat.v1.py_func(grad2,[y_pred],tf.float32)
+            grad_sr_3 = tf.compat.v1.py_func(grad3,[y_pred],tf.float32)
             grad_loss = K.mean( 
                 tf.losses.mean_squared_error(grad_hr_1,grad_sr_1)+
                 tf.losses.mean_squared_error(grad_hr_2,grad_sr_2)+
                 tf.losses.mean_squared_error(grad_hr_3,grad_sr_3))
-            return grad_loss
+            loss2 = tf.losses.mean_squared_error(y_true,y_pred)
+            
+            #return grad_loss + loss2
+            return loss2
        
         model.compile(
-            loss=pixel_loss,
+            loss=grad_loss,
             optimizer=Adam(self.gen_lr, 0.9,0.999),
             metrics=['mse']
             #metrics=['mse','mae', self.PSNR]
@@ -436,14 +440,14 @@ class PIESRGAN():
         # Create data loaders
         #f=h5.File(datapath_train,'r')
         # One for hr one for lr
-        train_loader = [DataLoader_s3d(datapath_train+'/DNS/s-1.5000E-05', nxg, nyg, nzg, 2, batch_size, boxsize), \
-                        DataLoader_s3d(datapath_train+'/Filt_8x/filt_s-1.5000E-05', nxg, nyg, nzg, 2, batch_size, boxsize)]
-        test_loader  = [DataLoader_s3d(datapath_test+'/DNS/s-2.4500E-05', nxg, nyg, nzg, 2, batch_size, boxsize), \
-                        DataLoader_s3d(datapath_test+'/Filt_8x/filt_s-2.4500E-05', nxg, nyg, nzg, 2, batch_size, boxsize)]
+        train_loader = [DataLoader_s3d(datapath_train+'/DNS/s-1.5000E-05', nxg, nyg, nzg, 2, batch_size, boxsize, self.channels_hr), \
+                        DataLoader_s3d(datapath_train+'/Filt_8x/filt_s-1.5000E-05', nxg, nyg, nzg, 2, batch_size, boxsize, self.channels_hr)]
+        test_loader  = [DataLoader_s3d(datapath_test+'/DNS/s-2.4500E-05', nxg, nyg, nzg, 2, batch_size, boxsize,self.channels_hr), \
+                        DataLoader_s3d(datapath_test+'/Filt_8x/filt_s-2.4500E-05', nxg, nyg, nzg, 2, batch_size, boxsize, self.channels_hr)]
 
-        mins, maxs = train_loader[0].get_norm_constants()
-        mins = mins[0]
-        maxs = maxs[0]
+        train_loader[0].get_norm_constants(48)
+        mins = train_loader[0].mins
+        maxs = train_loader[0].maxs
         for step in range(epochs // 10):
             with tf.device('/cpu:0'):
                 epoch_starttime=datetime.datetime.now()
@@ -484,27 +488,27 @@ class PIESRGAN():
                     print(">> fitting lmbda = ",filter_nr)
                     print(">> using [batch size = ",batch_size,"] and  [sub-boxsize = 16]")
                 #for idx in range (int(64*64*0/batch_size),int(64*64*31/batch_size)):
-                for idx in range(train_loader[0].nbatches):
+                for idx in range(train_loader[0].nbatches_plane):
                 #for idx in range(10):
                     if idx%20==0:
                         self.generator.save_weights("{}_generator_idx{}.h5".format(log_weight_path,idx))
                     with tf.device('/cpu:0'):
                         batch_starttime = datetime.datetime.now()
-                        hr_train = do_normalisation(train_loader[0].getData(0), 'minmax', mins, maxs)
-                        hr_test  = do_normalisation(test_loader[0].getData(0), 'minmax', mins, maxs)
-                        lr_train = do_normalisation(train_loader[1].getData(0), 'minmax', mins, maxs)
-                        lr_test  = do_normalisation(test_loader[1].getData(0), 'minmax', mins, maxs)
+                        hr_train = do_normalisation(train_loader[0].getTrainData_plane(48,0,idx), 'minmax', mins, maxs)
+                        #hr_test  = do_normalisation(test_loader[0].getData(0), 'minmax', mins, maxs)
+                        lr_train = do_normalisation(train_loader[1].getTrainData_plane(48,0,idx), 'minmax', mins, maxs)
+                        #lr_test  = do_normalisation(test_loader[1].getData(0), 'minmax', mins, maxs)
                         loading_time=datetime.datetime.now()
-                        test_data = lr_test, hr_test
+                        #test_data = lr_test, hr_test
                     with tf.device('/cpu:0'):
                         temp1=loading_time-batch_starttime
                         sum_load=sum_load+temp1
-                        print(">>---------->>>>>>>fitting on batch #",idx,"/",(train_loader[0].nbatches)," batch loaded in ",temp1,"s")
+                        print(">>---------->>>>>>>fitting on batch #",idx,"/",(train_loader[0].nbatches_plane)," batch loaded in ",temp1,"s")
                         #print(">>---------->>>>>>>>>>>>>>>[ts=8000]" )
                     self.generator.fit(
                     lr_train, hr_train,
                     steps_per_epoch=steps_per_epoch,
-                    epochs=3,
+                    epochs=1,
                     #validation_data=test_data,
                     #validation_steps=steps_per_validation,
                     #callbacks=[csv_logger, tensorboard],
@@ -517,7 +521,7 @@ class PIESRGAN():
                         fitted_time=datetime.datetime.now()
                         temp2=fitted_time-loading_time
                         sum_train=sum_train+temp2
-                        print(">>---------->>>>>>>batch #",idx,"/",(train_loader[0].nbatches)," fitted in ",temp2,"s")
+                        print(">>---------->>>>>>>batch #",idx,"/",(train_loader[0].nbatches_plane)," fitted in ",temp2,"s")
                         if idx%5==0:
                             print("[Summary] at idx=",idx," ,[total loading time]=",sum_load, " [total training time]=",sum_train)
                             gc.collect()
@@ -529,7 +533,7 @@ class PIESRGAN():
             
             
     def train_piesrgan(self,
-        epochs, batch_size,
+        epochs, batch_size,boxsize,
         dataname,
         datapath_train='../in3000.h5',
         datapath_validation='../in3000.h5',
@@ -568,13 +572,13 @@ class PIESRGAN():
         # Random images to go through
         #idxs = np.random.randint(0, len(loader), epochs)
         # One for hr one for lr
-        train_loader = [DataLoader_s3d(datapath_train+'/DNS/s-1.5000E-05', nxg, nyg, nzg, 2, batch_size, 16), \
-                        DataLoader_s3d(datapath_train+'/Filt_8x/filt_s-1.5000E-05', nxg, nyg, nzg, 2, batch_size, 16)]
-        test_loader  = [DataLoader_s3d(datapath_test+'/DNS/s-2.4500E-05', nxg, nyg, nzg, 2, batch_size, 16), \
-                        DataLoader_s3d(datapath_test+'/Filt_8x/filt_s-2.4500E-05', nxg, nyg, nzg, 2, batch_size, 16)]
-        mins, maxs = train_loader[0].get_norm_constants()
-        mins = mins[0]
-        maxs = maxs[0]
+        train_loader = [DataLoader_s3d(datapath_train+'/DNS/s-1.5000E-05', nxg, nyg, nzg, 2, batch_size, boxsize, self.channels_hr), \
+                        DataLoader_s3d(datapath_train+'/Filt_8x/filt_s-1.5000E-05', nxg, nyg, nzg, 2, batch_size, boxsize, self.channels_hr)]
+        test_loader  = [DataLoader_s3d(datapath_test+'/DNS/s-2.4500E-05', nxg, nyg, nzg, 2, batch_size, boxsize, self.channels_hr), \
+                        DataLoader_s3d(datapath_test+'/Filt_8x/filt_s-2.4500E-05', nxg, nyg, nzg, 2, batch_size, boxsize, self.channels_hr)]
+        train_loader[0].get_norm_constants(48)
+        mins = train_loader[0].mins
+        maxs = train_loader[0].maxs
         logging.basicConfig(filename='GAN_logs')
         # Loop through epochs / iterations
         for epoch in range(first_epoch, epochs + first_epoch):
@@ -619,7 +623,6 @@ class PIESRGAN():
                     ", ".join(["{}={:.5f}".format(k, v) for k, v in zip(self.piesrgan.metrics_names, g_avg_loss)]),
                     ", ".join(["{}={:.5f}".format(k, v) for k, v in zip(self.RaGAN.metrics_names, d_avg_loss)])
                 ))
-                print(g_avg_loss[0], "LOSS")
                 logging.warning("%s,%s", g_avg_loss[0], d_avg_loss[0])
                 print_losses = {"G": [], "D": []}
             # Check if we should save the network weights
@@ -666,8 +669,9 @@ if __name__ == '__main__':
     t1 = time.time()
     print(">> Creating the PIESRGAN network")
     gan = PIESRGAN(training_mode=True,
-                gen_lr=1e-4, dis_lr=1e-4,
-                channels=3
+                height_lr = 32, width_lr=32, depth_lr=32,
+                gen_lr=2e-5, dis_lr=4e-5,
+                channels=1
                 )
     # # Stage1: Train the generator w.r.t RRDB first
     print(">> Start training generator")
@@ -679,8 +683,9 @@ if __name__ == '__main__':
     #     batch_size=32,
     #)
 # Deepak
+    gan.load_weights(generator_weights='./data/weights3/_generator_idx60.h5')
     gan.train_generator(
-         epochs=10,
+         epochs=10000,
          boxsize=32,
          datapath_train='/scratch/w47/share/IsotropicTurb',
          datapath_test='/scratch/w47/share/IsotropicTurb',
@@ -688,11 +693,12 @@ if __name__ == '__main__':
          steps_per_validation=1,
          steps_per_epoch=1,
          workers=1,
-         log_weight_path='./data/weights2/',
+         log_weight_path='./data/weights3/',
          use_multiprocessing=True
     )
 
-    gan.load_weights(generator_weights='./data/weights/_generator_idx3320.h5')
+    #gan.load_weights(generator_weights='./data/weights2/_generator_idx1300.h5')
+
     '''    
     t1=time.time()
     gan.load_weights(generator_weights='./data/weights/_generator_idx900.h5')
@@ -729,17 +735,19 @@ if __name__ == '__main__':
     # Stage2: Train the PIESRGAN with percept_loss, gen_loss and pixel_loss
     #print(">> Start training PIESRGAN")
     #gan.generator.summary()    
-    #gan.train_piesrgan(
-    #     epochs=500,
-    #     first_epoch=0,
-    #     batch_size=8,
-    #     dataname='IsoTurb',
-        #datapath_train='../datasets/DIV2K_224/',
-    #     datapath_train='/scratch/w47/share/IsotropicTurb',
-    #     datapath_validation='/scratch/w47/share/IsotropicTurb',
-    #     datapath_test='/scratch/w47/share/IsotropicTurb',
-    ##     print_frequency=2
-    #     )
+    gan.train_piesrgan(
+         epochs=3000,
+         first_epoch=0,
+         batch_size=16,
+         boxsize=32,
+         dataname='IsoTurb',
+         log_weight_path='./data/weights4/',
+       #datapath_train='../datasets/DIV2K_224/',
+         datapath_train='/scratch/w47/share/IsotropicTurb',
+         datapath_validation='/scratch/w47/share/IsotropicTurb',
+         datapath_test='/scratch/w47/share/IsotropicTurb',
+    #     print_frequency=2
+         )
     #print(">> Done with PIESRGAN training")
     #gan.save_weights('./data/weights/')
 
