@@ -26,7 +26,7 @@ from keras.layers import UpSampling2D, Lambda, Dropout
 from keras.optimizers import Adam, RMSprop
 from keras.applications.vgg19 import preprocess_input
 from keras.utils.data_utils import OrderedEnqueuer
-from keras import backend as K           #campatability
+from tensorflow.keras import backend as K           #campatability
 from tensorflow.keras.callbacks import TensorBoard, ModelCheckpoint, LambdaCallback
 from keras.utils import multi_gpu_model
 from tensorflow.keras.callbacks import CSVLogger
@@ -68,7 +68,7 @@ class PIESRGAN():
                  gen_lr=1e-4, dis_lr=1e-7,
                  channels=3,
                  # VGG scaled with 1/12.75 as in paper
-                 loss_weights={'percept':1e-1,'gen':5e-5, 'pixel':5e0},
+                 loss_weights={'percept':5e-1,'gen':5e-5, 'pixel':1e-2},
                  training_mode=True,
                  refer_model=None,
                  ):
@@ -118,6 +118,7 @@ class PIESRGAN():
             # If training, build rest of GAN network
             if training_mode:
                 self.discriminator = self.build_discriminator()
+                self.compile_discriminator(self.discriminator)
                 self.RaGAN = self.build_RaGAN()
                 self.piesrgan = self.build_piesrgan()
                 #self.compile_discriminator(self.RaGAN)
@@ -250,30 +251,39 @@ class PIESRGAN():
 
     def build_piesrgan(self):
         """Create the combined PIESRGAN network"""
+        # Do consistent reduction for all losses
+        def grad_all(ytrue, ypred):
+            loss = (np.gradient(ytrue,axis=1)-np.gradient(ypred,axis=1))**2 + \
+                   (np.gradient(ytrue,axis=2)-np.gradient(ypred,axis=2))**2 + \
+                   (np.gradient(ytrue,axis=3)-np.gradient(ypred,axis=3))**2 
+            loss = np.mean(loss, axis=-1)
+            return loss
+
+
         def comput_loss(x):
             img_hr, generated_hr = x 
             # Compute the Perceptual loss ###based on GRADIENT-field MSE
-            grad_hr_1 = tf.compat.v1.py_func(grad1,[img_hr], tf.float32)
-            grad_hr_2 = tf.compat.v1.py_func(grad2,[img_hr],tf.float32)
-            grad_hr_3 = tf.compat.v1.py_func(grad3,[img_hr],tf.float32)
-            grad_sr_1 = tf.compat.v1.py_func(grad1,[generated_hr], tf.float32)
-            grad_sr_2 = tf.compat.v1.py_func(grad2,[generated_hr],tf.float32)
-            grad_sr_3 = tf.compat.v1.py_func(grad3,[generated_hr],tf.float32)
+            #grad_hr_1 = tf.compat.v1.py_func(grad1,[img_hr], tf.float32)
+            #grad_hr_2 = tf.compat.v1.py_func(grad2,[img_hr],tf.float32)
+            #grad_hr_3 = tf.compat.v1.py_func(grad3,[img_hr],tf.float32)
+            #grad_sr_1 = tf.compat.v1.py_func(grad1,[generated_hr], tf.float32)
+            #grad_sr_2 = tf.compat.v1.py_func(grad2,[generated_hr],tf.float32)
+            #grad_sr_3 = tf.compat.v1.py_func(grad3,[generated_hr],tf.float32)
             #grad_loss = K.mean(tf.losses.mean_squared_error( generated_hr, img_hr))
             #grad_loss= tf.py_function(grad1,[tf.math.subtract(img_hr,generated_hr)],tf.float32)
             #grad_loss=tf.math.reduce_mean(grad)
-            grad_loss = K.mean( 
-                tf.losses.mean_squared_error(grad_hr_1,grad_sr_1)+
-                tf.losses.mean_squared_error(grad_hr_2,grad_sr_2)+
-                tf.losses.mean_squared_error(grad_hr_3,grad_sr_3))
+            #grad_loss = tf.math.reduce_mean( 
+            #    tf.losses.mean_squared_error(grad_hr_1,grad_sr_1)+
+            #    tf.losses.mean_squared_error(grad_hr_2,grad_sr_2)+
+            #    tf.losses.mean_squared_error(grad_hr_3,grad_sr_3))
             # Compute the RaGAN loss
+            grad_loss = tf.math.reduce_mean(tf.compat.v1.py_func(grad_all,[img_hr, generated_hr], tf.float32))
             fake_logit, real_logit = self.RaGAN([img_hr, generated_hr])
-            BCE = tf.keras.losses.BinaryCrossentropy(reduction=tf.keras.losses.Reduction.SUM)
-            gen_loss = K.mean(
-                BCE(tf.zeros_like(real_logit), real_logit) +
+            BCE = tf.keras.losses.BinaryCrossentropy(reduction=tf.keras.losses.Reduction.NONE)
+            gen_loss =  tf.math.reduce_mean(BCE(tf.zeros_like(real_logit), real_logit) +
                 BCE(tf.ones_like(fake_logit), fake_logit))
             # Compute the pixel_loss with L1 loss
-            pixel_loss = K.mean(tf.losses.mean_squared_error(generated_hr, img_hr))
+            pixel_loss = tf.math.reduce_mean(tf.losses.mean_squared_error(generated_hr, img_hr))
             return [grad_loss, gen_loss, pixel_loss]
         
         # Input LR images
@@ -290,7 +300,7 @@ class PIESRGAN():
         grad_loss = Lambda(lambda x: self.loss_weights['percept'] * x, name='grad_loss')(total_loss[0])
         gen_loss = Lambda(lambda x: self.loss_weights['gen'] * x, name='gen_loss')(total_loss[1])
         pixel_loss = Lambda(lambda x: self.loss_weights['pixel'] * x, name='pixel_loss')(total_loss[2])
-        outputs = Lambda(lambda x : x, name = 'output')(total_loss)
+        #outputs = Lambda(lambda x : x, name = 'output')(total_loss)
         #loss = Lambda(lambda x: self.loss_weights['percept']*x[0]+self.loss_weights['gen']*x[1]+self.loss_weights['pixel']*x[2], name='total_loss')(total_loss)
        
         # Create model
@@ -305,12 +315,12 @@ class PIESRGAN():
         # Create metrics of PIESRGAN
         model.add_metric(grad_loss, name='grad_loss')
         model.add_metric(gen_loss, name='gen_loss')
-        model.add_metric(gen_loss, name='pixel_loss')
+        model.add_metric(pixel_loss, name='pixel_loss')
 
         model.metrics_names.append('grad_loss')
         model.metrics_names.append('gen_loss')
         model.metrics_names.append('pixel_loss')
-        plot_model(model, to_file='model_plot.png', show_shapes=True, show_layer_names=True)
+        #plot_model(model, to_file='model_plot.png', show_shapes=True, show_layer_names=True)
         model.compile(optimizer=Adam(self.gen_lr))
 
         #model.metrics_tensors.append(pixel_loss) 
@@ -341,8 +351,9 @@ class PIESRGAN():
         # Output tensors to a Model must be the output of a Keras `Layer`
         fake_logit = Lambda(lambda x: x, name='fake_logit')(total_loss[0])
         real_logit = Lambda(lambda x: x, name='real_logit')(total_loss[1])
-        dis_loss = K.mean(K.binary_crossentropy(K.zeros_like(fake_logit), fake_logit) +
-                          K.binary_crossentropy(K.ones_like(real_logit), real_logit))
+        BCE = tf.keras.losses.BinaryCrossentropy(reduction=tf.keras.losses.Reduction.NONE)
+        dis_loss = tf.math.reduce_mean(BCE(K.zeros_like(fake_logit), fake_logit) +
+                          BCE(K.ones_like(real_logit), real_logit))
         # dis_loss = tf.reduce_mean(
         #     tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.zeros_like(fake_logit), logits=fake_logit) +
         #     tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.ones_likes(real_logit), logits=real_logit))
@@ -357,6 +368,7 @@ class PIESRGAN():
         model.metrics_names.append('dis_loss')
         model.metrics_tensors = []
         model.metrics_tensors.append(dis_loss)
+        model.summary()
         return model
 
   
@@ -377,17 +389,26 @@ class PIESRGAN():
             grad_sr_1 = tf.compat.v1.py_func(grad1,[y_pred],tf.float32)
             grad_sr_2 = tf.compat.v1.py_func(grad2,[y_pred],tf.float32)
             grad_sr_3 = tf.compat.v1.py_func(grad3,[y_pred],tf.float32)
-            grad_loss = K.mean( 
-                tf.losses.mean_squared_error(grad_hr_1,grad_sr_1)+
-                tf.losses.mean_squared_error(grad_hr_2,grad_sr_2)+
-                tf.losses.mean_squared_error(grad_hr_3,grad_sr_3))
+            grad_loss =  tf.losses.mean_squared_error(grad_hr_1,grad_sr_1) +\
+                tf.losses.mean_squared_error(grad_hr_2,grad_sr_2) +\
+                tf.losses.mean_squared_error(grad_hr_3,grad_sr_3)
             loss2 = tf.losses.mean_squared_error(y_true,y_pred)
-            
             #return grad_loss + loss2
             return loss2
-       
+        def grad_loss2(y_true, y_pred):
+            #grads = tf.nn.compute_average_loss(tf.py_function(grad_all,[y_true, y_pred], tf.float32))
+
+            #mse = tf.keras.losses.MeanSquaredError(reduction=tf.keras.losses.Reduction.NONE)
+            #loss2 = tf.nn.compute_average_loss(mse(y_true,y_pred))
+            #grads = tf.compat.v1.py_func(grad_all,[y_true, y_pred], tf.float32)
+            #loss2 = tf.keras.losses.mean_squared_error(y_true, y_pred)
+            #return tf.nn.compute_average_loss(grads + loss2)
+            mae = tf.keras.losses.MeanAbsoluteError(reduction=tf.keras.losses.Reduction.NONE)
+            loss = tf.nn.compute_average_loss(mae(y_true, y_pred))
+            return loss
+
         model.compile(
-            loss=grad_loss,
+            loss=grad_loss2,
             optimizer=Adam(self.gen_lr, 0.9,0.999),
             metrics=['mse']
             #metrics=['mse','mae', self.PSNR]
@@ -448,36 +469,39 @@ class PIESRGAN():
         train_loader[0].get_norm_constants(48)
         mins = train_loader[0].mins
         maxs = train_loader[0].maxs
+        # Callback: tensorboard
+        callbacks = []
+        if log_tensorboard_path:
+            tensorboard = TensorBoard(
+                log_dir=os.path.join(log_tensorboard_path, log_tensorboard_name),
+                histogram_freq=0,
+                batch_size=batch_size,
+                write_graph=False,
+                write_grads=False,
+                update_freq=log_tensorboard_update_freq
+            )
+            callbacks.append(tensorboard)
+        else:
+            print(">> Not logging to tensorboard since no log_tensorboard_path is set")
+
+        # Callback: save weights after each epoch
+        modelcheckpoint = ModelCheckpoint(
+            os.path.join(log_weight_path, dataname + '_{}X.h5'.format(self.upscaling_factor)),
+            monitor='PSNR',
+            save_best_only=True,
+            save_weights_only=True
+        )
+        callbacks.append(modelcheckpoint)
+        #csv_logger = CSVLogger("model_history_log.csv", append=True)
+
+
+        csv_logger = CSVLogger("model_history_log.csv", append=True)
         for step in range(epochs // 10):
             with tf.device('/cpu:0'):
                 epoch_starttime=datetime.datetime.now()
-            self.compile_generator(self.generator)             
-            # Callback: tensorboard
-            callbacks = []
-            if log_tensorboard_path:
-                tensorboard = TensorBoard(
-                    log_dir=os.path.join(log_tensorboard_path, log_tensorboard_name),
-                    histogram_freq=0,
-                    batch_size=batch_size,
-                    write_graph=False,
-                    write_grads=False,
-                    update_freq=log_tensorboard_update_freq
-                )
-                callbacks.append(tensorboard)
-            else:
-                print(">> Not logging to tensorboard since no log_tensorboard_path is set")
-
-            # Callback: save weights after each epoch
-            modelcheckpoint = ModelCheckpoint(
-                os.path.join(log_weight_path, dataname + '_{}X.h5'.format(self.upscaling_factor)),
-                monitor='PSNR',
-                save_best_only=True,
-                save_weights_only=True
-            )
-            callbacks.append(modelcheckpoint)
-            csv_logger = CSVLogger("model_history_log.csv", append=True)
-
-            # Fit the model
+            # Should already be compiled
+            #self.compile_generator(self.generator)             
+                        # Fit the model
             for i in range(5,6):
                 ''' ##  iterate from lmbda= 64 to 64 '''
 
@@ -504,7 +528,6 @@ class PIESRGAN():
                         temp1=loading_time-batch_starttime
                         sum_load=sum_load+temp1
                         print(">>---------->>>>>>>fitting on batch #",idx,"/",(train_loader[0].nbatches_plane)," batch loaded in ",temp1,"s")
-                        #print(">>---------->>>>>>>>>>>>>>>[ts=8000]" )
                     self.generator.fit(
                     lr_train, hr_train,
                     steps_per_epoch=steps_per_epoch,
@@ -541,9 +564,9 @@ class PIESRGAN():
         datapath_test='../in3000.h5',
         workers=1, max_queue_size=1,
         first_epoch=0,
-        print_frequency=2,
+        print_frequency=1,
         crops_per_image=2,
-        log_weight_frequency=2,
+        log_weight_frequency=20,
         log_weight_path='./data/weights/',
         log_tensorboard_path='./data/logs_1/',
         log_tensorboard_name='PIESRGAN',
@@ -579,8 +602,10 @@ class PIESRGAN():
         train_loader[0].get_norm_constants(48)
         mins = train_loader[0].mins
         maxs = train_loader[0].maxs
-        logging.basicConfig(filename='GAN_logs')
+        logging.basicConfig(filename='GAN_logs',filemode='w', level=logging.INFO)
+        #logging.warning("New Case")
         # Loop through epochs / iterations
+        idx=0
         for epoch in range(first_epoch, epochs + first_epoch):
             # Start epoch time
             if epoch % print_frequency == 0:
@@ -589,10 +614,12 @@ class PIESRGAN():
                 filter_nr=2**lmd
                 print(">> fitting lmbda = ",filter_nr)
                 #imgs_lr,imgs_hr = RandomLoader_train(datapath_train, '{0:03}'.format(filter_nr),batch_size)
-                imgs_lr = do_normalisation(train_loader[1].getData(0),'minmax', mins, maxs)
-                imgs_hr = do_normalisation(train_loader[0].getData(0),'minmax',mins,maxs)
+                imgs_lr = do_normalisation(train_loader[1].getTrainData_plane(48,0,idx),'minmax', mins, maxs)
+                imgs_hr = do_normalisation(train_loader[0].getTrainData_plane(48,0,idx),'minmax',mins,maxs)
+                idx=idx+1   
                 generated_hr = self.generator.predict(imgs_lr,steps=1)
-                
+                if(idx>train_loader[0].nbatches_plane-1):
+                    idx=0
                 for step in range(10):
                 # SRGAN's loss (don't use them)
                 # real_loss = self.discriminator.train_on_batch(imgs_hr, real)
@@ -604,7 +631,7 @@ class PIESRGAN():
             
                 # Train generator
                 # features_hr = self.vgg.predict(self.preprocess_vgg(imgs_hr))
-                    generator_loss = self.piesrgan.train_on_batch([imgs_lr, imgs_hr], None)
+                    #generator_loss = self.piesrgan.train_on_batch([imgs_lr, imgs_hr], None)
                 # Save losses
                     print_losses['G'].append(generator_loss)
                     print_losses['D'].append(discriminator_loss)
@@ -620,10 +647,10 @@ class PIESRGAN():
                 print("\nEpoch {}/{} | Time: {}s\n>> Generator/GAN: {}\n>> Discriminator: {}".format(
                    epoch, epochs + first_epoch,
                     (datetime.datetime.now() - start_epoch).seconds,
-                    ", ".join(["{}={:.5f}".format(k, v) for k, v in zip(self.piesrgan.metrics_names, g_avg_loss)]),
-                    ", ".join(["{}={:.5f}".format(k, v) for k, v in zip(self.RaGAN.metrics_names, d_avg_loss)])
+                    ", ".join(["{}={:.7f}".format(k, v) for k, v in zip(self.piesrgan.metrics_names, g_avg_loss)]),
+                    ", ".join(["{}={:.7f}".format(k, v) for k, v in zip(self.RaGAN.metrics_names, d_avg_loss)])
                 ))
-                logging.warning("%s,%s", g_avg_loss[0], d_avg_loss[0])
+                logging.info("%s,%s,%s,%s,%s", g_avg_loss[0], g_avg_loss[1], g_avg_loss[2], g_avg_loss[3], d_avg_loss[0])
                 print_losses = {"G": [], "D": []}
             # Check if we should save the network weights
             if log_weight_frequency and epoch % log_weight_frequency == 0:
@@ -669,8 +696,8 @@ if __name__ == '__main__':
     t1 = time.time()
     print(">> Creating the PIESRGAN network")
     gan = PIESRGAN(training_mode=True,
-                height_lr = 32, width_lr=32, depth_lr=32,
-                gen_lr=2e-5, dis_lr=4e-5,
+                height_lr = 16, width_lr=16, depth_lr=16,
+                gen_lr=4e-6, dis_lr=5e-4,
                 channels=1
                 )
     # # Stage1: Train the generator w.r.t RRDB first
@@ -683,19 +710,19 @@ if __name__ == '__main__':
     #     batch_size=32,
     #)
 # Deepak
-    gan.load_weights(generator_weights='./data/weights3/_generator_idx60.h5')
-    gan.train_generator(
-         epochs=10000,
-         boxsize=32,
-         datapath_train='/scratch/w47/share/IsotropicTurb',
-         datapath_test='/scratch/w47/share/IsotropicTurb',
-         batch_size=32,
-         steps_per_validation=1,
-         steps_per_epoch=1,
-         workers=1,
-         log_weight_path='./data/weights3/',
-         use_multiprocessing=True
-    )
+    gan.load_weights(generator_weights='./data/weights4/_generator_idx280.h5')
+    #gan.train_generator(
+    #     epochs=100,
+    #     boxsize=16,
+    #     datapath_train='/scratch/w47/share/IsotropicTurb',
+    #     datapath_test='/scratch/w47/share/IsotropicTurb',
+    #     batch_size=32,
+    #     steps_per_validation=1,
+    #     steps_per_epoch=1,
+    #     workers=1,
+    #     log_weight_path='./data/weights4/',
+    #     use_multiprocessing=True
+    #)
 
     #gan.load_weights(generator_weights='./data/weights2/_generator_idx1300.h5')
 
@@ -738,8 +765,8 @@ if __name__ == '__main__':
     gan.train_piesrgan(
          epochs=3000,
          first_epoch=0,
-         batch_size=16,
-         boxsize=32,
+         batch_size=32,
+         boxsize=16,
          dataname='IsoTurb',
          log_weight_path='./data/weights4/',
        #datapath_train='../datasets/DIV2K_224/',
