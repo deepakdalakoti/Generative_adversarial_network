@@ -30,6 +30,9 @@ def do_normalisation(data,which, m1, m2):
     if(which=='minmax'):
         data = (data-m1)/(m2-m1)
         return data
+    if(which=='range'):
+        data = data/(m2-m1)
+        return data
 
 def do_inverse_normalisation(data,which, m1, m2):
 
@@ -38,6 +41,9 @@ def do_inverse_normalisation(data,which, m1, m2):
         return data
     if(which=='minmax'):
         data = data*(m2-m1) + m1
+        return data
+    if(which=='range'):
+        data = data*(m2-m1)
         return data
 
 
@@ -58,7 +64,8 @@ class DataLoader_s3d():
         self.boxsize = boxsize
         self._get_file_list()
         self.nbatches = int(self.nx*self.ny*self.nz*len(self.flist)/(boxsize**3*batch_size))
-        self.nbatches_plane = int(self.nxg*self.nyg*self.boxsize/(boxsize**3*batch_size))
+        #self.nbatches_plane = int(self.nxg*self.nyg*self.boxsize/(boxsize**3*batch_size))
+        self.nbatches_plane = int(256*256*self.boxsize/(boxsize**3*batch_size))
         #self.nfile_per_batch = int(boxsize**3*batch_size/(nx*ny*nz)) + 1
         self.floc = 0
         self.bloc = 0
@@ -107,6 +114,12 @@ class DataLoader_s3d():
 
         return reshaped
 
+    def inverse_reshape_array(self, data):
+        batches = data.shape[0]
+        data_res = np.empty([data.shape[1], data.shape[2]*batches, data.shape[3],data.shape[4]],dtype=np.float32)
+        for i in range(batches):
+            data_res[:,i*data.shape[1]:(i+1)*data.shape[1],:,:] = data[i,:,:,:,:]
+        return data_res
 
     def getData(self, key):
 
@@ -147,15 +160,16 @@ class DataLoader_s3d():
 
             res=[]
 
-            p = Pool(workers)
+            #p = Pool(workers)
+            #for i in range(slo,shi):
+            #    r=p.apply_async(self.get_data_plane, args=(i,), error_callback=print_error)
+            #    res.append([r,int(i-slo)])
+            #for i in range(len(res)):
+            #    self.udata[:,:,res[i][1],:] = res[i][0].get()
+            #p.close()
+            #p.join()
             for i in range(slo,shi):
-                r=p.apply_async(self.get_data_plane, args=(i,), error_callback=print_error)
-                res.append([r,int(i-slo)])
-            for i in range(len(res)):
-                self.udata[:,:,res[i][1],:] = res[i][0].get()
-            p.close()
-            p.join()
-
+                self.udata[:,:,i-slo,:] = self.get_data_plane(i)
             self.udata = self.reshape_array([self.boxsize, self.boxsize, self.boxsize], self.udata)
             self.init_train=1
 
@@ -497,7 +511,39 @@ def Image_generator(box1,box2,box3,output_name):
     axs[2].set_title('Unfiltered')
     fig.colorbar(im, ax=axs.ravel().tolist(), shrink=0.5)
     plt.savefig(output_name, dpi=500)
-    plt.show()
+    plt.close()
+
+def Image_generator2(box1,box2,box3,output_name):
+    fig,axs = plt.subplots(3,1, figsize=(15,15))
+    cmap = 'seismic'
+    #axs[0].contourf(box1, levels=40)
+    '''
+    plt.subplot(1,3,1)
+    plt.title('Filtered')
+    plt.contourf(box1)
+    plt.colorbar()
+    plt.subplot(1,3,2)
+    plt.title('PIESRGAN')
+    plt.contourf(box2)
+    plt.colorbar()
+    plt.subplot(1,3,3)
+    plt.title('DNS')
+    plt.contourf(box3)
+    plt.colorbar()
+    plt.tight_layout()
+    '''
+    im=axs[1].imshow(box2,cmap=cmap)
+    clim = im.properties()['clim']
+    axs[0].imshow(box1,cmap=cmap, clim=clim)
+    axs[0].set_title('Filtered')
+    #axs[1].contourf(box2, levels=40)
+    axs[1].set_title('PIESRGAN')
+    axs[2].imshow(box3,cmap=cmap, clim=clim)
+    #axs[2].contourf(box3, levels=40)
+    axs[2].set_title('Unfiltered')
+    fig.colorbar(im, ax=axs.ravel().tolist(), shrink=0.5)
+    plt.savefig(output_name, dpi=500)
+    plt.close()
     
 def read_single(readfile, idx, xst, xen, yst, yen, zst, zen):
         t1 = time.time()

@@ -106,10 +106,10 @@ class GAN_post(DataLoader_s3d):
             np.save(save,upred)    
         return upred
 
-    def get_spectrum_slice(self, workers, xmax, xmin, ymax, ymin, plane, savePred=None, pref=''):
+    def get_spectrum_slice(self, workers, xmax, xmin, ymax, ymin, plane, norm, savePred=None, pref=''):
         # Get spectrum of the GAN predictions
         t1=time.time()
-        upred = self.get_gan_slice_serial(plane, workers)
+        upred = self.get_gan_slice_serial(plane, workers, norm)
         print("Predicted in {} secs".format(time.time()-t1))
         nt = self.nxg*self.nyg
         u_k = np.empty([self.nxg, self.nyg, self.channels], dtype=complex)
@@ -269,8 +269,8 @@ class GAN_post(DataLoader_s3d):
         print("Total predict time {} secs ".format(time.time()-t1))
         return upred
 
-    def get_gan_slice_serial(self, plane, workers):
-        self.get_norm_constants(48)
+    def get_gan_slice_serial(self, plane, workers, norm, data=None):
+        self.get_norm_constants(workers)
         zid  = int(plane//(self.nzg/self.npz))
         zloc = int(plane%(self.nzg/self.npz))
         gan = PIESRGAN(training_mode=False, height_lr = self.boxsize, \
@@ -283,37 +283,48 @@ class GAN_post(DataLoader_s3d):
         udata = np.zeros([self.nxg,self.nyg,self.boxsize,self.channels], dtype=np.float32)
         #ray.init(address='auto', dashboard_host='0.0.0.0', dashboard_port=8888) 
         #p = Pool(workers, initializer = self.init_shared, initargs=(upred,))
-        p = Pool(workers)
         slo = int(max(plane-self.boxsize/2,0))
         shi = int(min(self.boxsize+slo,self.nzg-1))
         if(shi-slo < self.boxsize):
             slo = int(self.boxsize-(shi-slo))
 
         res=[]
+        if(data is None):
+            p = Pool(workers)
+            for i in range(slo,shi):
+                r=p.apply_async(self.get_data_plane, args=(i,), error_callback=self.print_error)
+                res.append([r,int(i-slo)])
+            for i in range(len(res)):
+                udata[:,:,res[i][1],:] = res[i][0].get()
+            p.close()
+            p.join()
 
-        for i in range(slo,shi):
-            r=p.apply_async(self.get_data_plane, args=(i,), error_callback=self.print_error)
-            res.append([r,int(i-slo)])
-        for i in range(len(res)):
-            udata[:,:,res[i][1],:] = res[i][0].get()
-        p.close()
-        p.join()
+            udata = self.reshape_array([self.boxsize, self.boxsize, self.boxsize], udata)
+        else:
+            udata = data
 
-        udata = self.reshape_array([self.boxsize, self.boxsize, self.boxsize], udata)
-        nbatches = udata.shape[0]//self.batch_size
         upred = np.zeros([self.nxg, self.nyg, self.boxsize, self.channels], dtype=np.float32)        
+        nbatches = udata.shape[0]//self.batch_size
         bx  = self.boxsize
         nby = self.nyg/bx
-
+        if(norm=='minmax'):
+            m1=self.mins
+            m2=self.maxs
+        if(norm=='std'):
+            m1=self.mean
+            m2=self.std
+        if(norm=='range'):
+            m1=self.mins
+            m2=self.maxs
+        
         t2=time.time()
         for i in range(nbatches):
             ist = i*self.batch_size
             ien = min((i+1)*self.batch_size, udata.shape[0])
             t1=time.time()
-            data = do_normalisation(udata[ist:ien,:,:,:,:],'minmax', self.mins, self.maxs)
-            print(data.shape,"SHAPE")
+            data = do_normalisation(udata[ist:ien,:,:,:,:],norm, m1, m2)
             pred = gan.generator.predict(data, batch_size=self.batch_size)
-            pred = do_inverse_normalisation(pred, 'minmax', self.mins, self.maxs)
+            pred = do_inverse_normalisation(pred, norm, m1, m2)
             print("Predicted in {} secs".format(time.time()-t1))
             for j in range(ist, ien):
                 ii = int(j//nby)

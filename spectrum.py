@@ -173,7 +173,7 @@ def get_velocity_spectrum_slice(data_loader, xmax, xmin, ymax, ymin, plane, work
     u_k = np.empty([data_loader.nxg, data_loader.nyg,data_loader.channels], dtype=complex)
     for L in range(data_loader.channels):
         t1 = time.time()
-        u_k[:,:,L] = fftn(udata[:,:,int(data_loader.boxsize/2),L], workers=-1)/nt
+        u_k[:,:,L] = fftn(udata[:,:,plane-slo,L], workers=-1)/nt
         print("FFT finished in {} secs".format(time.time()-t1))
     #print("Total KE after fft ", np.sum(np.real(u_k*np.conj(u_k))))
     nhx, nhy = data_loader.nxg/2+1, data_loader.nyg/2+1

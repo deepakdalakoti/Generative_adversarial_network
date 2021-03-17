@@ -39,6 +39,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 '''Use Horovod in case of multi nodes parallelizations'''
 #import horovod.keras as hvd
+#import horovod.tensorflow.keras as hvd
+
 import time
 import logging
 def lrelu1(x):
@@ -80,6 +82,13 @@ class PIESRGAN():
         :param int gen_lr: Learning rate of generator
         :param int dis_lr: Learning rate of discriminator
         """
+        #hvd.init()
+
+        #gpus = tf.config.experimental.list_physical_devices('GPU')
+        #for gpu in gpus:
+        #    tf.config.experimental.set_memory_growth(gpu, True)
+        #if gpus:
+        #    tf.config.experimental.set_visible_devices(gpus[hvd.local_rank()], 'GPU')
 
         self.mirrored_strategy = tf.distribute.MirroredStrategy()
         self.upscaling_factor=1.0
@@ -116,11 +125,11 @@ class PIESRGAN():
             self.compile_generator(self.generator)
             #self.refer_model = refer_model
             # If training, build rest of GAN network
-            if training_mode:
-                self.discriminator = self.build_discriminator()
-                self.compile_discriminator(self.discriminator)
-                self.RaGAN = self.build_RaGAN()
-                self.piesrgan = self.build_piesrgan()
+        #    if training_mode:
+        #        self.discriminator = self.build_discriminator()
+        #        self.compile_discriminator(self.discriminator)
+        #        self.RaGAN = self.build_RaGAN()
+        #        self.piesrgan = self.build_piesrgan()
                 #self.compile_discriminator(self.RaGAN)
                 #self.compile_piesrgan(self.piesrgan)
                     
@@ -148,36 +157,39 @@ class PIESRGAN():
         height_hr=self.height_hr
         width_hr=self.width_hr
         depth_hr=self.depth_hr
-
+        beta = 0.2
+        slope= 0.1
         def dense_block(input):
             x1 = Conv3D(64, kernel_size=3, strides=1, padding='same')(input)
-            x1 = LeakyReLU(0.2)(x1)
+            x1 = LeakyReLU(slope)(x1)
             x1 = Concatenate()([input, x1])
 
             x2 = Conv3D(64, kernel_size=3, strides=1, padding='same')(x1)
-            x2 = LeakyReLU(0.2)(x2)
+            x2 = LeakyReLU(slope)(x2)
             x2 = Concatenate()([input, x1, x2])
 
             x3 = Conv3D(64, kernel_size=3, strides=1, padding='same')(x2)
-            x3 = LeakyReLU(0.2)(x3)
+            x3 = LeakyReLU(slope)(x3)
             x3 = Concatenate()([input, x1, x2, x3])
 
             x4 = Conv3D(64, kernel_size=3, strides=1, padding='same')(x3)
-            x4 = LeakyReLU(0.2)(x4)
+            x4 = LeakyReLU(slope)(x4)
             x4 = Concatenate()([input, x1, x2, x3, x4])  #added x3, which ESRGAN didn't include
 
             x5 = Conv3D(64, kernel_size=3, strides=1, padding='same')(x4)
-            x5 = Lambda(lambda x: x * 0.2)(x5)
+            x5 = Lambda(lambda x: x * beta)(x5)
             """here: assumed beta=0.2"""
             x = Add()([x5, input])
             return x
 
-        def RRDB(input):
+        def RRDB(input, layers=12):
+            # How many layers?
             x = dense_block(input)
-            x = dense_block(x)
-            x = dense_block(x)
+            for i in range(layers-1):
+                x = dense_block(x)
+            #x = dense_block(x)
             """here: assumed beta=0.2 as well"""
-            x = Lambda(lambda x: x * 0.2)(x)
+            x = Lambda(lambda x: x * beta)(x)
             out = Add()([x, input])
             return out
 
@@ -188,21 +200,28 @@ class PIESRGAN():
         lr_input = Input(shape=self.shape_lr)
         # Pre-residual
         x_start = Conv3D(64, data_format="channels_last", kernel_size=3, strides=1, padding='same')(lr_input)
-        x_start = LeakyReLU(0.2)(x_start)
+        x_start = LeakyReLU(slope)(x_start)
 
         # Residual-in-Residual Dense Block
         x = RRDB(x_start)
 
         # Post-residual block
         x = Conv3D(64, kernel_size=3, strides=1, padding='same')(x)
-        x = Lambda(lambda x: x * 0.2)(x)
+        x = Lambda(lambda x: x * beta)(x)
         x = Add()([x, x_start])
-        x = Conv3D(512,kernel_size=3, strides=1, padding='same',activation=lrelu1)(x)
-        x = Conv3D(512,kernel_size=3, strides=1, padding='same',activation=lrelu1)(x)
+        #x = Conv3D(512,kernel_size=3, strides=1, padding='same',activation=lrelu1)(x)
+        #x = Conv3D(512,kernel_size=3, strides=1, padding='same',activation=lrelu1)(x)
+        # Be consistent with the original paper
+        x = Conv3D(256,kernel_size=3, strides=1, padding='same')(x)
+        x = LeakyReLU(slope)(x)
+        x = Conv3D(256,kernel_size=3, strides=1, padding='same')(x)
+        x = LeakyReLU(slope)(x)
         #Final 2 convolutional layers
         x = Conv3D(64, kernel_size=3, strides=1, padding='same')(x)
-        x = LeakyReLU(0.2)(x)
-        hr_output = Conv3D(self.channels_hr, kernel_size=3, strides=1, padding='same', activation='tanh')(x)
+        x = LeakyReLU(slope)(x)
+        # Activation for output?
+        #hr_output = Conv3D(self.channels_hr, kernel_size=3, strides=1, padding='same', activation='tanh')(x)
+        hr_output = Conv3D(self.channels_hr, kernel_size=3, strides=1, padding='same')(x)
 
         # Create model and compile
         model = Model(inputs=lr_input, outputs=hr_output)
@@ -248,6 +267,79 @@ class PIESRGAN():
         model = Model(inputs=img, outputs=x)
         #model.summary()
         return model
+    
+    def build_gan(self, gen_weights=None, disc_weights=None):
+
+        with self.mirrored_strategy.scope():
+            self.gen_gan = self.build_generator()
+            self.dis_gan = self.build_discriminator()
+            if(gen_weights):
+                self.gen_gan.load_weights(gen_weights)
+            if(disc_weights):
+                self.dis_gan.load_weights(disc_weights)
+
+            self.generator_optimizer = tf.keras.optimizers.Adam(self.gen_lr)
+            self.discriminator_optimizer = tf.keras.optimizers.Adam(self.dis_lr)
+
+    def train_gan_step(self, img_lr, img_hr):
+        #with self.mirrored_strategy.scope():
+        def grad_all(ytrue, ypred):
+            loss = (np.gradient(ytrue,axis=1)-np.gradient(ypred,axis=1))**2 + \
+                   (np.gradient(ytrue,axis=2)-np.gradient(ypred,axis=2))**2 + \
+                   (np.gradient(ytrue,axis=3)-np.gradient(ypred,axis=3))**2 
+            loss = np.mean(loss, axis=-1)
+            return loss
+
+        def comput_loss(x):
+            img_hr, generated_hr, fake_logit, real_logit = x 
+            grad_loss = tf.nn.compute_average_loss(tf.compat.v1.py_func(grad_all,[img_hr, generated_hr], tf.float32))
+            BCE = tf.keras.losses.BinaryCrossentropy(reduction=tf.keras.losses.Reduction.NONE)
+            gen_loss =  tf.nn.compute_average_loss(BCE(tf.zeros_like(real_logit), real_logit) +
+                    BCE(tf.ones_like(fake_logit), fake_logit))
+            mse = tf.keras.losses.MeanSquaredError(tf.keras.losses.Reduction.NONE)
+            pixel_loss = tf.nn.compute_average_loss(mse(generated_hr, img_hr))
+            #print(gen_loss, grad_loss)
+            total = grad_loss*1.0 + gen_loss*1e-2 + pixel_loss*1.0
+            return total, grad_loss, gen_loss, pixel_loss
+            #return grad_loss+gen_loss+pixel_loss
+            #return [grad_loss, gen_loss, pixel_loss]
+        def comput_loss_disc(x):
+            real, fake = x
+            fake_logit = tf.math.sigmoid(fake - K.mean(real))
+            real_logit = tf.math.sigmoid(real - K.mean(fake))
+            BCE = tf.keras.losses.BinaryCrossentropy(reduction=tf.keras.losses.Reduction.NONE)
+            dis_loss = tf.nn.compute_average_loss(BCE(K.zeros_like(fake_logit), fake_logit) +
+                          BCE(K.ones_like(real_logit), real_logit))
+            return dis_loss, fake_logit, real_logit
+
+        with tf.GradientTape() as gen_tape, tf.GradientTape() as disc_tape: 
+            generated_hr = self.gen_gan(img_lr, training=True) 
+            real_discriminator_logits = self.dis_gan(img_hr, training=True)
+            fake_discriminator_logits = self.dis_gan(generated_hr, training=True)
+            disc_loss, fake_logits, real_logits = comput_loss_disc([real_discriminator_logits, fake_discriminator_logits])
+            total_loss, grad_loss, gen_loss, pixel_loss = comput_loss([img_hr, generated_hr, fake_logits, real_logits ])
+
+        gradients_of_generator = gen_tape.gradient(total_loss, self.gen_gan.trainable_variables)
+        gradients_of_discriminator = disc_tape.gradient(disc_loss, self.dis_gan.trainable_variables)
+
+        self.generator_optimizer.apply_gradients(zip(gradients_of_generator, self.gen_gan.trainable_variables))
+        self.discriminator_optimizer.apply_gradients(zip(gradients_of_discriminator, self.dis_gan.trainable_variables))
+
+        #self.mirrored_strategy.run(self.generator_optimizer.apply_gradients,list(zip(gradients_of_generator, self.gen_gan.trainable_variables)))
+        #self.mirrored_strategy.run(self.discriminator_optimizer.apply_gradients,list(zip(gradients_of_discriminator, self.dis_gan.trainable_variables)))
+
+        #return total_loss.numpy(), grad_loss.numpy(), gen_loss.numpy(), pixel_loss.numpy(), disc_loss.numpy()
+        return total_loss, grad_loss, gen_loss, pixel_loss, disc_loss
+    @tf.function
+    def distributed_train_step(self,imgs_lr,  imgs_hr):
+        total_loss_per, grad_loss_per, gen_loss_per, pixel_loss_per, disc_loss_per = self.mirrored_strategy.run(self.train_gan_step, args=(imgs_lr, imgs_hr,))
+        total_loss = self.mirrored_strategy.reduce(tf.distribute.ReduceOp.SUM, total_loss_per,axis=None)
+        grad_loss = self.mirrored_strategy.reduce(tf.distribute.ReduceOp.SUM, grad_loss_per,axis=None)
+        gen_loss = self.mirrored_strategy.reduce(tf.distribute.ReduceOp.SUM, gen_loss_per,axis=None)
+        pixel_loss = self.mirrored_strategy.reduce(tf.distribute.ReduceOp.SUM, pixel_loss_per,axis=None)
+        disc_loss = self.mirrored_strategy.reduce(tf.distribute.ReduceOp.SUM, disc_loss_per,axis=None)
+
+        return total_loss, grad_loss, gen_loss, pixel_loss, disc_loss
 
     def build_piesrgan(self):
         """Create the combined PIESRGAN network"""
@@ -368,7 +460,7 @@ class PIESRGAN():
         model.metrics_names.append('dis_loss')
         model.metrics_tensors = []
         model.metrics_tensors.append(dis_loss)
-        model.summary()
+        #model.summary()
         return model
 
   
@@ -398,19 +490,23 @@ class PIESRGAN():
         def grad_loss2(y_true, y_pred):
             #grads = tf.nn.compute_average_loss(tf.py_function(grad_all,[y_true, y_pred], tf.float32))
 
-            #mse = tf.keras.losses.MeanSquaredError(reduction=tf.keras.losses.Reduction.NONE)
-            #loss2 = tf.nn.compute_average_loss(mse(y_true,y_pred))
+            mse = tf.keras.losses.MeanSquaredError(reduction=tf.keras.losses.Reduction.NONE)
+            loss2 = tf.nn.compute_average_loss(mse(y_true,y_pred))
+
             #grads = tf.compat.v1.py_func(grad_all,[y_true, y_pred], tf.float32)
             #loss2 = tf.keras.losses.mean_squared_error(y_true, y_pred)
             #return tf.nn.compute_average_loss(grads + loss2)
-            mae = tf.keras.losses.MeanAbsoluteError(reduction=tf.keras.losses.Reduction.NONE)
-            loss = tf.nn.compute_average_loss(mae(y_true, y_pred))
-            return loss
-
+            #mae = tf.keras.losses.MeanAbsoluteError(reduction=tf.keras.losses.Reduction.NONE)
+            #loss = tf.nn.compute_average_loss(mae(y_true, y_pred))
+            #return loss
+            return loss2
+        self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.gen_lr,beta_1=0.9,beta_2=0.999)
+        #optimizer = hvd.DistributedOptimizer(optimizer)
         model.compile(
             loss=grad_loss2,
-            optimizer=Adam(self.gen_lr, 0.9,0.999),
-            metrics=['mse']
+            optimizer=self.optimizer,
+            metrics=['mse'],
+            #experimental_run_tf_function=False
             #metrics=['mse','mae', self.PSNR]
         )
 
@@ -462,13 +558,13 @@ class PIESRGAN():
         #f=h5.File(datapath_train,'r')
         # One for hr one for lr
         train_loader = [DataLoader_s3d(datapath_train+'/DNS/s-1.5000E-05', nxg, nyg, nzg, 2, batch_size, boxsize, self.channels_hr), \
-                        DataLoader_s3d(datapath_train+'/Filt_8x/filt_s-1.5000E-05', nxg, nyg, nzg, 2, batch_size, boxsize, self.channels_hr)]
+                        DataLoader_s3d(datapath_train+'/Filt_4x/filt_s-1.5000E-05', nxg, nyg, nzg, 2, batch_size, boxsize, self.channels_hr)]
         test_loader  = [DataLoader_s3d(datapath_test+'/DNS/s-2.4500E-05', nxg, nyg, nzg, 2, batch_size, boxsize,self.channels_hr), \
-                        DataLoader_s3d(datapath_test+'/Filt_8x/filt_s-2.4500E-05', nxg, nyg, nzg, 2, batch_size, boxsize, self.channels_hr)]
+                        DataLoader_s3d(datapath_test+'/Filt_4x/filt_s-2.4500E-05', nxg, nyg, nzg, 2, batch_size, boxsize, self.channels_hr)]
 
         train_loader[0].get_norm_constants(48)
-        mins = train_loader[0].mins
-        maxs = train_loader[0].maxs
+        mins = train_loader[0].mean
+        maxs = train_loader[0].std
         # Callback: tensorboard
         callbacks = []
         if log_tensorboard_path:
@@ -518,9 +614,9 @@ class PIESRGAN():
                         self.generator.save_weights("{}_generator_idx{}.h5".format(log_weight_path,idx))
                     with tf.device('/cpu:0'):
                         batch_starttime = datetime.datetime.now()
-                        hr_train = do_normalisation(train_loader[0].getTrainData_plane(48,0,idx), 'minmax', mins, maxs)
+                        hr_train = do_normalisation(train_loader[0].getTrainData_plane(48,0,idx), 'std', mins, maxs)
                         #hr_test  = do_normalisation(test_loader[0].getData(0), 'minmax', mins, maxs)
-                        lr_train = do_normalisation(train_loader[1].getTrainData_plane(48,0,idx), 'minmax', mins, maxs)
+                        lr_train = do_normalisation(train_loader[1].getTrainData_plane(48,0,idx), 'std', mins, maxs)
                         #lr_test  = do_normalisation(test_loader[1].getData(0), 'minmax', mins, maxs)
                         loading_time=datetime.datetime.now()
                         #test_data = lr_test, hr_test
@@ -697,22 +793,24 @@ if __name__ == '__main__':
     print(">> Creating the PIESRGAN network")
     gan = PIESRGAN(training_mode=True,
                 height_lr = 16, width_lr=16, depth_lr=16,
-                gen_lr=4e-6, dis_lr=5e-4,
+                gen_lr=1e-6, dis_lr=5e-4,
                 channels=1
                 )
     # # Stage1: Train the generator w.r.t RRDB first
     print(">> Start training generator")
     print(">> training [ts=5500]")
     print("GAN creation took {} secs".format(time.time()-t1))
+    gan.generator.load_weights('./data/weights/generator_idx_1600.h5')
+    gan.generator.save_weights('./data/weights/test_idx_1600.h5')
     #gan.train_generator(
     #     epochs=10,
     #     datapath_train='../../../hpcwork/zl963564/box5500.h5',
     #     batch_size=32,
     #)
 # Deepak
-    gan.load_weights(generator_weights='./data/weights4/_generator_idx280.h5')
+    #gan.load_weights(generator_weights='./data/weights4/_generator_idx280.h5')
     #gan.train_generator(
-    #     epochs=100,
+    ##     epochs=100,
     #     boxsize=16,
     #     datapath_train='/scratch/w47/share/IsotropicTurb',
     #     datapath_test='/scratch/w47/share/IsotropicTurb',
@@ -720,7 +818,7 @@ if __name__ == '__main__':
     #     steps_per_validation=1,
     #     steps_per_epoch=1,
     #     workers=1,
-    #     log_weight_path='./data/weights4/',
+    #     log_weight_path='./data/weights/',
     #     use_multiprocessing=True
     #)
 
@@ -762,19 +860,19 @@ if __name__ == '__main__':
     # Stage2: Train the PIESRGAN with percept_loss, gen_loss and pixel_loss
     #print(">> Start training PIESRGAN")
     #gan.generator.summary()    
-    gan.train_piesrgan(
-         epochs=3000,
-         first_epoch=0,
-         batch_size=32,
-         boxsize=16,
-         dataname='IsoTurb',
-         log_weight_path='./data/weights4/',
-       #datapath_train='../datasets/DIV2K_224/',
-         datapath_train='/scratch/w47/share/IsotropicTurb',
-         datapath_validation='/scratch/w47/share/IsotropicTurb',
-         datapath_test='/scratch/w47/share/IsotropicTurb',
-    #     print_frequency=2
-         )
+    #gan.train_piesrgan(
+    #     epochs=3000,
+    #     first_epoch=0,
+    #     batch_size=32,
+    #     boxsize=16,
+    #     dataname='IsoTurb',
+    #     log_weight_path='./data/weights4/',
+    #   #datapath_train='../datasets/DIV2K_224/',
+    #     datapath_train='/scratch/w47/share/IsotropicTurb',
+    #     datapath_validation='/scratch/w47/share/IsotropicTurb',
+    #     datapath_test='/scratch/w47/share/IsotropicTurb',
+    ##     print_frequency=2
+    #     )
     #print(">> Done with PIESRGAN training")
     #gan.save_weights('./data/weights/')
 
