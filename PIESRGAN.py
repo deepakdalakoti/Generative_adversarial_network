@@ -73,6 +73,7 @@ class PIESRGAN():
                  loss_weights={'percept':5e-1,'gen':5e-5, 'pixel':1e-2},
                  training_mode=True,
                  refer_model=None,
+                 RRDB_layers=3
                  ):
         """
         :param int height_lr: Height of low-resolution DNS data
@@ -97,6 +98,7 @@ class PIESRGAN():
         self.width_lr = width_lr
         self.depth_lr=depth_lr
         self.channels_lr = int(channels)
+        self.RRDB_layers = RRDB_layers
         # High-resolution image dimensions are identical to those of the LR, removed the upsampling block!
         self.height_hr = int(self.height_lr )
         self.width_hr = int(self.width_lr )
@@ -203,7 +205,7 @@ class PIESRGAN():
         x_start = LeakyReLU(slope)(x_start)
 
         # Residual-in-Residual Dense Block
-        x = RRDB(x_start)
+        x = RRDB(x_start, self.RRDB_layers)
 
         # Post-residual block
         x = Conv3D(64, kernel_size=3, strides=1, padding='same')(x)
@@ -278,8 +280,8 @@ class PIESRGAN():
             if(disc_weights):
                 self.dis_gan.load_weights(disc_weights)
 
-            self.generator_optimizer = tf.keras.optimizers.Adam(self.gen_lr)
-            self.discriminator_optimizer = tf.keras.optimizers.Adam(self.dis_lr)
+            self.generator_optimizer = tf.keras.optimizers.Adam(self.gen_lr, beta_1=0.9, beta_2=0.999)
+            self.discriminator_optimizer = tf.keras.optimizers.Adam(self.dis_lr, beta_1=0.9, beta_2=0.999)
 
     def train_gan_step(self, img_lr, img_hr):
         #with self.mirrored_strategy.scope():
@@ -297,7 +299,7 @@ class PIESRGAN():
             gen_loss =  tf.nn.compute_average_loss(BCE(tf.zeros_like(real_logit), real_logit) +
                     BCE(tf.ones_like(fake_logit), fake_logit))
             mse = tf.keras.losses.MeanSquaredError(tf.keras.losses.Reduction.NONE)
-            pixel_loss = tf.nn.compute_average_loss(mse(generated_hr, img_hr))
+            pixel_loss = tf.nn.compute_average_loss(mse(img_hr,generated_hr))
             #print(gen_loss, grad_loss)
             total = grad_loss*1.0 + gen_loss*1e-2 + pixel_loss*1.0
             return total, grad_loss, gen_loss, pixel_loss

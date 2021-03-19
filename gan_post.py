@@ -65,7 +65,7 @@ class GAN_post(DataLoader_s3d):
         print("Total pred time {} secs".format(time.time()-t1))
         return upred
 
-    def get_pred_serial(self, save=None):
+    def get_pred_serial(self, norm, save=None):
         upred = np.zeros([self.nxg, self.nyg, self.nzg, self.channels], dtype=np.float32)
         t1=time.time()
         res=[]
@@ -77,14 +77,25 @@ class GAN_post(DataLoader_s3d):
         gan = PIESRGAN(training_mode=False, height_lr = self.boxsize, \
                     width_lr=self.boxsize, depth_lr = self.boxsize, channels=self.channels)
         gan.load_weights(generator_weights=self.weights)
+
+        if(norm=='minmax'):
+            m1=self.mins
+            m2=self.maxs
+        if(norm=='std'):
+            m1=self.mean
+            m2=self.std
+        if(norm=='range'):
+            m1=self.mins
+            m2=self.maxs
         
+
         for fnum in range(len(self.flist)):
             data = self.readfile(fnum)
             data = self.reshape_array([self.boxsize, self.boxsize, self.boxsize],data)
             t1=time.time()
-            data = do_normalisation(data,'minmax', self.mins, self.maxs)
+            data = do_normalisation(data,norm, m1, m2)
             pred = gan.generator.predict(data, batch_size=self.batch_size)
-            pred = do_inverse_normalisation(pred, 'minmax', self.mins, self.maxs)
+            pred = do_inverse_normalisation(pred, norm, m1, m2)
             print("Predicted in {} secs fnum {}".format(time.time()-t1, fnum))
 
             zid = fnum//(self.npx*self.npy)
@@ -152,10 +163,10 @@ class GAN_post(DataLoader_s3d):
         return spectrum
 
 
-    def get_spectrum(self, workers, xmax, xmin, ymax, ymin, zmax, zmin, savePred=None, pref=''):
+    def get_spectrum(self, workers, xmax, xmin, ymax, ymin, zmax, zmin, norm, savePred=None, pref=''):
         # Get spectrum of the GAN predictions
         t1=time.time()
-        upred = self.get_pred_serial(savePred)
+        upred = self.get_pred_serial(norm,savePred)
         #upred = np.load('pred_s-2.4500E-05.pkl.npy')
         print("Predicted in {} secs".format(time.time()-t1))
         nt = self.nxg*self.nyg*self.nzg

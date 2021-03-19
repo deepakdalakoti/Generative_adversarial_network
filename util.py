@@ -58,7 +58,7 @@ class DataLoader_s3d():
         self.batch_size = batch_size
         self.channels = channels
         if(np.sum([ x%boxsize for x in [self.nx, self.ny, self.nz]]) > 0 ):
-            sys.exit("Data dimension {}*{}*{} not divisible by boxsize {}".format(nx, ny, nz, boxsize))
+            sys.exit("Data dimension {}*{}*{} not divisible by boxsize {}".format(self.nx, self.ny, self.nz, boxsize))
             
         self.a_ref = a_ref
         self.boxsize = boxsize

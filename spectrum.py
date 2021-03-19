@@ -43,9 +43,9 @@ def do_spectrum(data_loader, u_k, xmax, xmin, ymax, ymin, zmax, zmin, xid, yid, 
 
                         mag_k = np.sqrt(kx[i]**2 + ky[j]**2 + kz[k]**2)
                         ik = int(min(max(np.floor(mag_k/del_k),0.0),nk-1))
-                        tkeh[ik] = tkeh[ik] + np.real(0.5*(u_k[i,j,k,0]*np.conj(u_k[i,j,k,0]) + \
-                                   u_k[i,j,k,1]*np.conj(u_k[i,j,k,1]) + \
-                                   u_k[i,j,k,2]*np.conj(u_k[i,j,k,2])))
+                        for L in range(data_loader.channels):
+                            tkeh[ik] = tkeh[ik] + np.real(0.5*(u_k[i,j,L]*np.conj(u_k[i,j,L]))) 
+
         print("Loop took {} secs".format(time.time()-t1))
         return tkeh/del_k
 
@@ -101,8 +101,8 @@ def get_velocity_spectrum(data_loader, xmax, xmin, ymax, ymin, zmax, zmin, worke
     print("Total data load time {} secs".format(time.time()-t1))
 
     nt = data_loader.nxg*data_loader.nyg*data_loader.nzg
-    u_k = np.empty([data_loader.nxg, data_loader.nyg, data_loader.nzg,3], dtype=complex)
-    for L in range(3):
+    u_k = np.empty([data_loader.nxg, data_loader.nyg, data_loader.nzg,data_loader.channels], dtype=complex)
+    for L in range(data_loader.channels):
         t1 = time.time()
         u_k[:,:,:,L] = fftn(u[:,:,:,L], workers=-1)/nt
         print("FFT finished in {} secs".format(time.time()-t1))
@@ -210,13 +210,13 @@ def get_velocity_spectrum_slice(data_loader, xmax, xmin, ymax, ymin, plane, work
 
 
 if __name__=='__main__':
-    DNS = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/DNS/s-2.4500E-05', 1536, 1536, 1536, 2, 16, 32)
-    spectrum = get_velocity_spectrum(DNS, 5e-3, 0, 5e-3 , 0, 5e-3, 0, 48, 'DNS_s-2.4500E-05_')
-    Filt = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/Filt_8x/filt_s-2.4500E-05', 1536, 1536, 1536, 2, 16, 32)
-    spectrum = get_velocity_spectrum(Filt, 5e-3, 0, 5e-3, 0, 5e-3, 0, 48, 'Filt_8x_s-2.4500E-05_')
+    #DNS = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/DNS/s-2.4500E-05', 1536, 1536, 1536, 2, 16, 32)
+    #spectrum = get_velocity_spectrum(DNS, 5e-3, 0, 5e-3 , 0, 5e-3, 0, 48, 'DNS_s-2.4500E-05_')
+    #Filt = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/Filt_8x/filt_s-2.4500E-05', 1536, 1536, 1536, 2, 16, 32)
+    #spectrum = get_velocity_spectrum(Filt, 5e-3, 0, 5e-3, 0, 5e-3, 0, 48, 'Filt_8x_s-2.4500E-05_')
 
-    DNS = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/DNS/s-1.5000E-05', 1536, 1536, 1536, 2, 16, 32)
-    spectrum = get_velocity_spectrum(DNS, 5e-3, 0, 5e-3 , 0, 5e-3, 0, 48, 'DNS_s-1.5000E-05_')
-    Filt = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/Filt_8x/filt_s-1.5000E-05', 1536, 1536, 1536, 2, 16, 32)
-    spectrum = get_velocity_spectrum(Filt, 5e-3, 0, 5e-3, 0, 5e-3, 0, 48, 'Filt_8x_s-1.5000E-05_')
+    DNS = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/DNS/s-1.5000E-05', 1536, 1536, 1536, 2, 16, 32, 1)
+    spectrum = get_velocity_spectrum(DNS, 5e-3, 0, 5e-3 , 0, 5e-3, 0, 48, 'DNS_all_s-1.5000E-05_')
+    Filt = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/Filt_8x/filt_s-1.5000E-05', 1536, 1536, 1536, 2, 16, 32, 1)
+    spectrum = get_velocity_spectrum(Filt, 5e-3, 0, 5e-3, 0, 5e-3, 0, 48, 'Filt_8x_all_s-1.5000E-05_')
 
