@@ -167,7 +167,7 @@ if(mode==0):
                     gen_lr=5e-5, dis_lr=2e-6,
                     channels=3, RRDB_layers=6
                     )
-    load_model_generator(gan, savedir, 1850)
+    load_model_generator(gan, savedir, 2800)
     #gan.generator.load_weights(savedir+'generator_idx_11000.h5')
     #gan.generator = tf.keras.models.load_model(savedir+'generator_idx_100')
     csv_logger = CSVLogger("regridded.csv", append=True)
@@ -175,7 +175,7 @@ if(mode==0):
     #hvd_callback = hvd.callbacks.BroadcastGlobalVariablesCallback(0)
     idx=0
     isave=700
-    for i in range(1851,epochs):
+    for i in range(2801,epochs):
         imgs_lr = do_normalisation(train_loader_lr.getData(idx),norm, mins, maxs)
         imgs_hr = do_normalisation(train_loader_hr.getData(idx),norm,mins,maxs)
         idx=idx+1
