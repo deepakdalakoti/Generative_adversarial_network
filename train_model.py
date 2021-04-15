@@ -92,9 +92,9 @@ def load_model_gan(model,savedir, idx, Gen=True, Dis=False):
 
 nxg, nyg, nzg =192, 192, 192
 batch_size=16
-boxsize=4
+boxsize=8
 datapath_train='/scratch/w47/share/IsotropicTurb'
-train_loader_hr = DataLoader_s3d(datapath_train+'/DNS_Relambda_162_up_50_Lt_2mm/s-7.0000E-06', 1536, 1536, 1536, 2, batch_size, 32, 3)
+train_loader_hr = DataLoader_s3d(datapath_train+'/DNS_Relambda_162_up_50_Lt_2mm/s-7.0000E-06', 1536, 1536, 1536, 2, batch_size, boxsize*8, 3)
 train_loader_hr.get_norm_constants(48)
 
 train_loader_lr=GAN_post(datapath_train+'/Filtered_Relambda_162_up_50_Lt_2mm/Filt_8x_regrid_192grid/s-7.0000E-06', nxg, nyg, nzg, 2, batch_size, boxsize, 3, 1)
@@ -107,7 +107,7 @@ epochs=50000000
 print_frequency = 200
 save_frequency = 50
 fig_frequency = 50
-savedir = './data/regridded/'
+savedir = './data/upsamp/'
 #mirrored_strategy = tf.distribute.MirroredStrategy()
 mode = 0 # 1 = GAN, 0 = generator
 norm='minmax'
@@ -165,19 +165,19 @@ if(mode==0):
     gan = PIESRGAN(training_mode=True,
                     height_lr = boxsize, width_lr=boxsize, depth_lr=boxsize,
                     gen_lr=5e-5, dis_lr=2e-6,
-                    channels=3, RRDB_layers=6
+                    channels=3, RRDB_layers=9
                     )
-    #load_model_generator(gan, savedir, 1850)
+    load_model_generator(gan, savedir, 1000)
     #gan.generator.load_weights(savedir+'generator_idx_11000.h5')
     #gan.generator = tf.keras.models.load_model(savedir+'generator_idx_100')
     csv_logger = CSVLogger("upsamp.csv", append=True)
     #reduce_lr = ReduceLROnPlateau(monitor='loss', factor=0.75, patience=5, min_lr=1e-6, verbose=1)
     #hvd_callback = hvd.callbacks.BroadcastGlobalVariablesCallback(0)
-    idx=0
+    idx=1000
     isave=0
-    for i in range(0,epochs):
-        imgs_lr = do_normalisation(train_loader_lr.getData(idx),norm, mins, maxs)
-        imgs_hr = do_normalisation(train_loader_hr.getData(idx),norm,mins,maxs)
+    for i in range(1001,epochs):
+        imgs_lr = do_normalisation(train_loader_lr.getTrainData(idx),norm, mins, maxs)
+        imgs_hr = do_normalisation(train_loader_hr.getTrainData(idx),norm,mins,maxs)
         idx=idx+1
         if(idx>train_loader_lr.nbatches-1):
             idx=0
@@ -196,11 +196,11 @@ if(mode==0):
             #gan.generator.save(savedir+"generator_idx_{}".format(i))
             isave=i
         if(i%fig_frequency==0):
-            #continue
+            continue
 
-            if(i==0):
-                continue
-            generate_image_slice(savedir+"generator_idx_{}.h5".format(isave),isave, norm, train_loader_hr, train_loader_lr, 'regredded')
+            #if(i==0):
+            #    continue
+            #generate_image_slice(savedir+"generator_idx_{}.h5".format(isave),isave, norm, train_loader_hr, train_loader_lr, 'regredded')
             #generate_spectrum(savedir+"generator_idx_{}.h5".format(isave),isave, norm, train_loader_lr, 'pred_regredded')
         #    pred = gan.gen_gan(imgs_lr)
         #    print(np.sum((pred-imgs_hr)**2))

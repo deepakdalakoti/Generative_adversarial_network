@@ -22,7 +22,6 @@ import ctypes
 from multiprocessing import Pool
 import matplotlib.pyplot as plt
 #from PIESRGAN import PIESRGAN
-
 def do_normalisation(data,which, m1, m2):
 
     if(which=='std'):
@@ -58,15 +57,15 @@ class DataLoader_s3d():
         self.nspec = nspec
         self.batch_size = batch_size
         self.channels = channels
-        if(np.sum([ x%boxsize for x in [self.nx, self.ny, self.nz]]) > 0 ):
-            sys.exit("Data dimension {}*{}*{} not divisible by boxsize {}".format(self.nx, self.ny, self.nz, boxsize))
+        #if(np.sum([ x%boxsize for x in [self.nx, self.ny, self.nz]]) > 0 ):
+        #    sys.exit("Data dimension {}*{}*{} not divisible by boxsize {}".format(self.nx, self.ny, self.nz, boxsize))
             
         self.a_ref = a_ref
         self.boxsize = boxsize
         self._get_file_list()
         self.nbatches = int(self.nx*self.ny*self.nz*len(self.flist)/(boxsize**3*batch_size))
-        #self.nbatches_plane = int(self.nxg*self.nyg*self.boxsize/(boxsize**3*batch_size))
-        self.nbatches_plane = int(256*256*self.boxsize/(boxsize**3*batch_size))
+        self.nbatches_plane = int(self.nxg*self.nyg*self.boxsize/(boxsize**3*batch_size))
+        #self.nbatches_plane = int(256*256*self.boxsize/(boxsize**3*batch_size))
         #self.nfile_per_batch = int(boxsize**3*batch_size/(nx*ny*nz)) + 1
         self.floc = 0
         self.bloc = 0
@@ -174,6 +173,22 @@ class DataLoader_s3d():
 
         return data
 
+    def getTrainData(self, idx):
+
+        if(idx > self.nbatches-1):
+            raise IndexError("Index out of maximum possible batches")
+        
+        if(not self.init_train):
+            print(self.init_train,"INIT")
+            if(self.nxg==1536):
+                udata = np.load('udata.npy')
+            else:
+                udata  = self.read_parallel(48)
+            self.udata = self.reshape_array([self.boxsize, self.boxsize, self.boxsize], udata)
+
+            self.init_train=1
+
+        return self.udata[idx*self.batch_size:(idx+1)*self.batch_size,:,:,:,:]
 
     def getTrainData_plane(self, workers, plane, idx):
 
@@ -483,7 +498,6 @@ class UpSampling3D(Layer):
         
 def subPixelConv3d(net, height_hr, width_hr, depth_hr, stepsToEnd, n_out_channel):
     """ pixle-shuffling for 3d data"""
-    print("inp", net.shape)
     i = net
     r = 2
     a, b, z, c = int(height_hr/ (2 ** stepsToEnd)), int(width_hr / (2 ** stepsToEnd)), int(
@@ -495,7 +509,6 @@ def subPixelConv3d(net, height_hr, width_hr, depth_hr, stepsToEnd, n_out_channel
     xrr = tf.concat(xss, 2)  # b*h*(r*w)*(r*d)*r
     xsss = tf.split(xrr, r, 4)
     xrrr = tf.concat(xsss,1)
-    print(xrrr.shape, a,b, z, n_out_channel)
     x = tf.reshape(xrrr, (batchsize, r * a, r * b, r * z, n_out_channel))  # b*(r*h)*(r*w)*(r*d)*n_out 
 
     return x
