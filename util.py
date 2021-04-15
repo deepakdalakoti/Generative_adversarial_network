@@ -483,6 +483,7 @@ class UpSampling3D(Layer):
         
 def subPixelConv3d(net, height_hr, width_hr, depth_hr, stepsToEnd, n_out_channel):
     """ pixle-shuffling for 3d data"""
+    print("inp", net.shape)
     i = net
     r = 2
     a, b, z, c = int(height_hr/ (2 ** stepsToEnd)), int(width_hr / (2 ** stepsToEnd)), int(
@@ -492,7 +493,10 @@ def subPixelConv3d(net, height_hr, width_hr, depth_hr, stepsToEnd, n_out_channel
     xr = tf.concat(xs, 3)  # b*h*w*(r*d)*r*r
     xss = tf.split(xr, r, 4)  # b*h*w*(r*d)*r*r
     xrr = tf.concat(xss, 2)  # b*h*(r*w)*(r*d)*r
-    x = tf.reshape(xrr, (batchsize, r * a, r * b, r * z, n_out_channel))  # b*(r*h)*(r*w)*(r*d)*n_out 
+    xsss = tf.split(xrr, r, 4)
+    xrrr = tf.concat(xsss,1)
+    print(xrrr.shape, a,b, z, n_out_channel)
+    x = tf.reshape(xrrr, (batchsize, r * a, r * b, r * z, n_out_channel))  # b*(r*h)*(r*w)*(r*d)*n_out 
 
     return x
 

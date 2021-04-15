@@ -92,7 +92,7 @@ class PIESRGAN():
         #    tf.config.experimental.set_visible_devices(gpus[hvd.local_rank()], 'GPU')
 
         self.mirrored_strategy = tf.distribute.MirroredStrategy()
-        self.upscaling_factor=1.0
+        self.upscaling_factor=upscaling_factor
         # Low-resolution image dimensions
         self.height_lr = height_lr
         self.width_lr = width_lr
@@ -222,7 +222,7 @@ class PIESRGAN():
         x = subPixelConv3d(x, self.height_hr, self.width_hr, self.depth_hr, 2, 32)
         x = LeakyReLU(slope)(x)
         #Final 2 convolutional layers
-        x = Conv3D(64, kernel_size=3, strides=1, padding='same')(x)
+        x = Conv3D(256, kernel_size=3, strides=1, padding='same')(x)
         x = subPixelConv3d(x, self.height_hr, self.width_hr, self.depth_hr, 1, 32)
         x = LeakyReLU(slope)(x)
         # Activation for output?
