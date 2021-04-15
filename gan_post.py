@@ -14,6 +14,7 @@ from scipy.fft import fftn
 from spectrum import do_spectrum, do_spectrum_slice
 #import pathos.multiprocessing as pm
 # TO DO : add channels to dataloader
+RRDB_layers = 6
 
 class GAN_post(DataLoader_s3d):
 
@@ -75,7 +76,7 @@ class GAN_post(DataLoader_s3d):
         nbz = self.nz/self.boxsize
         bx  = self.boxsize
         gan = PIESRGAN(training_mode=False, height_lr = self.boxsize, \
-                    width_lr=self.boxsize, depth_lr = self.boxsize, channels=self.channels)
+                    width_lr=self.boxsize, depth_lr = self.boxsize, channels=self.channels, RRDB_layers=RRDB_layers)
         gan.load_weights(generator_weights=self.weights)
 
         if(norm=='minmax'):
@@ -285,7 +286,7 @@ class GAN_post(DataLoader_s3d):
         zid  = int(plane//(self.nzg/self.npz))
         zloc = int(plane%(self.nzg/self.npz))
         gan = PIESRGAN(training_mode=False, height_lr = self.boxsize, \
-                    width_lr=self.boxsize, depth_lr = self.boxsize, channels=self.channels)
+                    width_lr=self.boxsize, depth_lr = self.boxsize, channels=self.channels, RRDB_layers=RRDB_layers)
         gan.load_weights(generator_weights=self.weights)
 
         #shared = multiprocessing.Array('f', self.nxg*self.nyg*16*3)
@@ -315,9 +316,77 @@ class GAN_post(DataLoader_s3d):
             udata = data
 
         upred = np.zeros([self.nxg, self.nyg, self.boxsize, self.channels], dtype=np.float32)        
-        nbatches = udata.shape[0]//self.batch_size
+        nbatches = int(np.ceil(udata.shape[0]/self.batch_size))
         bx  = self.boxsize
         nby = self.nyg/bx
+        if(norm=='minmax'):
+            m1=self.mins
+            m2=self.maxs
+        if(norm=='std'):
+            m1=self.mean
+            m2=self.std
+        if(norm=='range'):
+            m1=self.mins
+            m2=self.maxs
+        
+        t2=time.time()
+        for i in range(nbatches):
+            ist = i*self.batch_size
+            ien = min((i+1)*self.batch_size, udata.shape[0])
+            t1=time.time()
+            data = do_normalisation(udata[ist:ien,:,:,:,:],norm, m1, m2)
+            pred = gan.generator.predict(data, batch_size=self.batch_size)
+            pred = do_inverse_normalisation(pred, norm, m1, m2)
+            print("Predicted in {} secs".format(time.time()-t1))
+            for j in range(ist, ien):
+                ii = int(j//nby)
+                jj = int(j%nby)
+                kk=0
+                upred[ii*bx:(ii+1)*bx, jj*bx:(jj+1)*bx,kk*bx:(kk+1)*bx,:] = pred[j-ist,:,:,:,:]
+ 
+
+        print("Total predict time {} secs ".format(time.time()-t2))
+        return upred
+
+    def get_gan_filter_slice_serial(self, plane, workers, norm, filter_size, filt):
+        self.get_norm_constants(workers)
+        zid  = int(plane//(self.nzg/self.npz))
+        zloc = int(plane%(self.nzg/self.npz))
+        #shared = multiprocessing.Array('f', self.nxg*self.nyg*16*3)
+        #upred = np.frombuffer(shared.get_obj(), dtype=np.float32)
+        #upred = upred.reshape(self.nxg,self.nyg,16,3)
+        zsize = self.boxsize*filter_size
+        udata = np.zeros([self.nxg,self.nyg,zsize,self.channels], dtype=np.float32)
+        #ray.init(address='auto', dashboard_host='0.0.0.0', dashboard_port=8888) 
+        #p = Pool(workers, initializer = self.init_shared, initargs=(upred,))
+        slo = int(max(plane-zsize/2,0))
+        shi = int(min(zsize+slo,self.nzg-1))
+        if(shi-slo < zsize):
+            slo = int(zsize-(shi-slo))
+
+        res=[]
+    
+        p = Pool(workers)
+        for i in range(slo,shi):
+            r=p.apply_async(self.get_data_plane, args=(i,), error_callback=self.print_error)
+            res.append([r,int(i-slo)])
+        for i in range(len(res)):
+            udata[:,:,res[i][1],:] = res[i][0].get()
+        p.close()
+        p.join()
+
+        gan = PIESRGAN(training_mode=False, height_lr = self.boxsize, \
+                    width_lr=self.boxsize, depth_lr = self.boxsize, channels=self.channels, RRDB_layers=RRDB_layers)
+        gan.load_weights(generator_weights=self.weights)
+
+
+        udata = self.filter_data(filter_size, udata, filt)
+
+        upred = np.zeros([udata.shape[0], udata.shape[1], udata.shape[2], self.channels], dtype=np.float32)        
+        udata = self.reshape_array([self.boxsize, self.boxsize, self.boxsize], udata)
+        nbatches = int(np.ceil(udata.shape[0]/self.batch_size))
+        bx  = self.boxsize
+        nby = int(self.nyg/bx/filter_size)
         if(norm=='minmax'):
             m1=self.mins
             m2=self.maxs

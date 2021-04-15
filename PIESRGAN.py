@@ -35,7 +35,6 @@ from util import UpSampling3D, DataLoader, RandomLoader_train, Image_generator
 #subPixelConv3d, DataLoader, RandomLoader_train, Image_generator
 from util import DataLoader_s3d, do_normalisation
 import h5py as h5
-import matplotlib.pyplot as plt
 import numpy as np
 '''Use Horovod in case of multi nodes parallelizations'''
 #import horovod.keras as hvd
@@ -262,7 +261,8 @@ class PIESRGAN():
         x = conv3d_block(x, filters * 8, strides=2)
         x = Dense(filters * 16)(x)
         x = LeakyReLU(alpha=0.2)(x)
-        x = Dropout(0.4)(x)
+        # No dropout in original model
+        #x = Dropout(0.4)(x)
         x = Dense(1)(x)
 
         # Create model and compile
@@ -289,20 +289,31 @@ class PIESRGAN():
             loss = (np.gradient(ytrue,axis=1)-np.gradient(ypred,axis=1))**2 + \
                    (np.gradient(ytrue,axis=2)-np.gradient(ypred,axis=2))**2 + \
                    (np.gradient(ytrue,axis=3)-np.gradient(ypred,axis=3))**2 
-            loss = np.mean(loss, axis=-1)
+            loss = np.mean(loss, axis=(1,2,3,4))
+            return loss
+        def continuity_loss(ytrue, ypred):
+            # Continuity loss
+            mass_true = np.gradient(ytrue[:,:,:,:,0],axis=1) + np.gradient(ytrue[:,:,:,:,1],axis=2) + \
+                        np.gradient(ytrue[:,:,:,:,2],axis=3)
+            mass_pred = np.gradient(ypred[:,:,:,:,0],axis=1) + np.gradient(ypred[:,:,:,:,1],axis=2) + \
+                        np.gradient(ypred[:,:,:,:,2],axis=3)
+            loss = np.mean((mass_true-mass_pred)**2, axis=(1,2,3))
             return loss
 
         def comput_loss(x):
-            img_hr, generated_hr, fake_logit, real_logit = x 
+            img_hr, generated_hr, fake, real = x 
+            fake_logit = tf.math.sigmoid(fake-K.mean(real))
+            real_logit = tf.math.sigmoid(real - K.mean(fake))
             grad_loss = tf.nn.compute_average_loss(tf.compat.v1.py_func(grad_all,[img_hr, generated_hr], tf.float32))
+            cont_loss = tf.nn.compute_average_loss(tf.compat.v1.py_func(continuity_loss,[img_hr, generated_hr], tf.float32))
             BCE = tf.keras.losses.BinaryCrossentropy(reduction=tf.keras.losses.Reduction.NONE)
             gen_loss =  tf.nn.compute_average_loss(BCE(tf.zeros_like(real_logit), real_logit) +
                     BCE(tf.ones_like(fake_logit), fake_logit))
             mse = tf.keras.losses.MeanSquaredError(tf.keras.losses.Reduction.NONE)
             pixel_loss = tf.nn.compute_average_loss(mse(img_hr,generated_hr))
             #print(gen_loss, grad_loss)
-            total = grad_loss*1.0 + gen_loss*1e-2 + pixel_loss*1.0
-            return total, grad_loss, gen_loss, pixel_loss
+            total = grad_loss + gen_loss*1e-5 + pixel_loss*1.e-7 + cont_loss*0.0
+            return total, grad_loss, gen_loss, pixel_loss, cont_loss
             #return grad_loss+gen_loss+pixel_loss
             #return [grad_loss, gen_loss, pixel_loss]
         def comput_loss_disc(x):
@@ -319,7 +330,7 @@ class PIESRGAN():
             real_discriminator_logits = self.dis_gan(img_hr, training=True)
             fake_discriminator_logits = self.dis_gan(generated_hr, training=True)
             disc_loss, fake_logits, real_logits = comput_loss_disc([real_discriminator_logits, fake_discriminator_logits])
-            total_loss, grad_loss, gen_loss, pixel_loss = comput_loss([img_hr, generated_hr, fake_logits, real_logits ])
+            total_loss, grad_loss, gen_loss, pixel_loss, cont_loss = comput_loss([img_hr, generated_hr, fake_discriminator_logits, real_discriminator_logits ])
 
         gradients_of_generator = gen_tape.gradient(total_loss, self.gen_gan.trainable_variables)
         gradients_of_discriminator = disc_tape.gradient(disc_loss, self.dis_gan.trainable_variables)
@@ -331,17 +342,18 @@ class PIESRGAN():
         #self.mirrored_strategy.run(self.discriminator_optimizer.apply_gradients,list(zip(gradients_of_discriminator, self.dis_gan.trainable_variables)))
 
         #return total_loss.numpy(), grad_loss.numpy(), gen_loss.numpy(), pixel_loss.numpy(), disc_loss.numpy()
-        return total_loss, grad_loss, gen_loss, pixel_loss, disc_loss
+        return total_loss, grad_loss, gen_loss, pixel_loss, cont_loss, disc_loss
     @tf.function
     def distributed_train_step(self,imgs_lr,  imgs_hr):
-        total_loss_per, grad_loss_per, gen_loss_per, pixel_loss_per, disc_loss_per = self.mirrored_strategy.run(self.train_gan_step, args=(imgs_lr, imgs_hr,))
+        total_loss_per, grad_loss_per, gen_loss_per, pixel_loss_per, cont_loss_per, disc_loss_per = self.mirrored_strategy.run(self.train_gan_step, args=(imgs_lr, imgs_hr,))
         total_loss = self.mirrored_strategy.reduce(tf.distribute.ReduceOp.SUM, total_loss_per,axis=None)
         grad_loss = self.mirrored_strategy.reduce(tf.distribute.ReduceOp.SUM, grad_loss_per,axis=None)
         gen_loss = self.mirrored_strategy.reduce(tf.distribute.ReduceOp.SUM, gen_loss_per,axis=None)
         pixel_loss = self.mirrored_strategy.reduce(tf.distribute.ReduceOp.SUM, pixel_loss_per,axis=None)
+        cont_loss = self.mirrored_strategy.reduce(tf.distribute.ReduceOp.SUM, cont_loss_per,axis=None)
         disc_loss = self.mirrored_strategy.reduce(tf.distribute.ReduceOp.SUM, disc_loss_per,axis=None)
 
-        return total_loss, grad_loss, gen_loss, pixel_loss, disc_loss
+        return total_loss, grad_loss, gen_loss, pixel_loss, cont_loss, disc_loss
 
     def build_piesrgan(self):
         """Create the combined PIESRGAN network"""
@@ -794,7 +806,7 @@ if __name__ == '__main__':
     t1 = time.time()
     print(">> Creating the PIESRGAN network")
     gan = PIESRGAN(training_mode=True,
-                height_lr = 16, width_lr=16, depth_lr=16,
+                height_lr = 32, width_lr=32, depth_lr=32,
                 gen_lr=1e-6, dis_lr=5e-4,
                 channels=1
                 )

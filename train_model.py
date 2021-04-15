@@ -23,13 +23,13 @@ def generate_image_slice(weights, i, norm, DNS, Filt, pref):
      
     Filt.weights=weights
 
-    pred = Filt.get_gan_slice_serial(0,48, norm, data=Filt.udata)
+    pred = Filt.get_gan_slice_serial(0,48, norm, data=None)
     HR = DNS.get_data_plane(0)
 
     #Filt=DataLoader_s3d(datapath_train+'/Filt_4x/filt_s-1.5000E-05', 1536, 1536, 1536, 2, batch_size, boxsize, 1)
     LR = Filt.get_data_plane(0)
 
-    Image_generator(LR[:,:,0], pred[:,:,0,0], HR[:,:,0], pred+'_{}.png'.format(i))
+    Image_generator(LR[:,:,0], pred[:,:,0,0], HR[:,:,0], pref+'_{}.png'.format(i))
     return
 
 def generate_spectrum(weights, i,  norm, Filt, pref):
@@ -90,59 +90,58 @@ def load_model_gan(model,savedir, idx, Gen=True, Dis=False):
     return
 
 
-nxg, nyg, nzg =1536, 1536, 1536
+nxg, nyg, nzg =192, 192, 192
 batch_size=16
 boxsize=32
 datapath_train='/scratch/w47/share/IsotropicTurb'
-train_loader_hr = DataLoader_s3d(datapath_train+'/DNS/s-1.5000E-05', nxg, nyg, nzg, 2, batch_size, boxsize, 1)
+train_loader_hr = DataLoader_s3d(datapath_train+'/Filtered_Relambda_162_up_50_Lt_2mm/DNS_regrid_192grid/s-7.0000E-06', nxg, nyg, nzg, 2, batch_size, boxsize, 3)
 train_loader_hr.get_norm_constants(48)
 
-train_loader_lr=GAN_post(datapath_train+'/Filt_8x/filt_s-1.5000E-05', nxg, nyg, nzg, 2, batch_size, boxsize, 1, 1)
+train_loader_lr=GAN_post(datapath_train+'/Filtered_Relambda_162_up_50_Lt_2mm/Filt_8x_regrid_192grid/s-7.0000E-06', nxg, nyg, nzg, 2, batch_size, boxsize, 3, 1)
 
 #idx=0
 #imgs_lr = do_normalisation(train_loader_lr.getTrainData_plane(48,0,idx),'minmax', mins, maxs)
 #imgs_hr = do_normalisation(train_loader_hr.getTrainData_plane(48,0,idx),'minmax',mins,maxs)
 
-epochs=5000000
-print_frequency = 10
-save_frequency = 500
-fig_frequency = 1000
-savedir = './data/weights3/'
+epochs=50000000
+print_frequency = 200
+save_frequency = 50
+fig_frequency = 50
+savedir = './data/regridded/'
 #mirrored_strategy = tf.distribute.MirroredStrategy()
-mode = 1 # 1 = GAN, 0 = generator
+mode = 0 # 1 = GAN, 0 = generator
+norm='minmax'
+mins = train_loader_hr.mins
+maxs = train_loader_hr.maxs
+
 
 if(mode==1):
-    logfile = open('GAN_logs_32_l3','w')
-    logfile.write('epoch \t total_loss \t grad_loss\t gen_loss\t pixel_loss\t dis_loss\n')
+    logfile = open('GAN_logs_32_l12','w')
+    logfile.write('epoch \t total_loss \t grad_loss\t gen_loss\t pixel_loss\t cont_loss\t dis_loss\n')
     gan = PIESRGAN(training_mode=True,
                     height_lr = boxsize, width_lr=boxsize, depth_lr=boxsize,
-                    gen_lr=2.5e-5, dis_lr=2.5e-5,
-                    channels=1, 
-                    RRDB_layers=3
+                    gen_lr=1e-5, dis_lr=1.0e-5,
+                    channels=3, 
+                    RRDB_layers=12
                     )
 
 
-    gan.build_gan(gen_weights=savedir+'generator_idx_35000.h5', disc_weights=None)
-    #gan.build_gan()
-    #load_model_gan(gan, savedir, 35000, Gen=True, Dis=False) 
+    gan.build_gan(gen_weights=savedir+'generator_idx_5700.h5', disc_weights=None)
+    gan.build_gan()
+    #load_model_gan(gan, savedir, 5700, Gen=True, Dis=True) 
 
     #out = gan.distributed_train_step(imgs_lr, imgs_hr)
     idx=0
     isave=0
-    norm='minmax'
-    mins = train_loader_hr.mins
-    maxs = train_loader_hr.maxs
-
-
-    for i in range(epochs):
-        imgs_lr = do_normalisation(train_loader_lr.getTrainData_plane(48,0,idx),norm, mins, maxs)
-        imgs_hr = do_normalisation(train_loader_hr.getTrainData_plane(48,0,idx),norm,mins,maxs)
+    for i in range(0,epochs):
+        imgs_lr = do_normalisation(train_loader_lr.getData(idx),norm, mins, maxs)
+        imgs_hr = do_normalisation(train_loader_hr.getData(idx),norm,mins,maxs)
         idx=idx+1
-        if(idx>train_loader_lr.nbatches_plane-1):
+        if(idx>train_loader_lr.nbatches-1):
             idx=0
         t1=time.time()    
-        total_loss, grad_loss, gen_loss, pixel_loss, disc_loss = gan.distributed_train_step(imgs_lr, imgs_hr)
-        logfile.write("{},{},{},{},{},{}\n".format(i, total_loss, grad_loss, gen_loss, pixel_loss, disc_loss))
+        total_loss, grad_loss, gen_loss, pixel_loss, cont_loss, disc_loss = gan.distributed_train_step(imgs_lr, imgs_hr)
+        logfile.write("{},{},{},{},{},{},{}\n".format(i, total_loss, grad_loss, gen_loss, pixel_loss, cont_loss, disc_loss))
         logfile.flush()
         if(i%print_frequency == 0):
             print("EPOCH : {} TOTAL GEN LOSS : {} DISC LOSS : {} EPOCH TIME {} secs".format(i, total_loss, disc_loss, time.time()-t1))
@@ -152,8 +151,8 @@ if(mode==1):
         if(i%fig_frequency==0):
             if(i==0):
                 continue
-            generate_image_slice(savedir+"gen_gan_idx_{}.h5".format(isave),isave, norm, train_loader_hr, train_loader_lr, 'slice_gan_32_l2')
-            generate_spectrum(savedir+"gen_gan_idx_{}.h5".format(isave),isave, norm, train_loader_lr, 'pred_gan_s-1.5000E-05_32_l3')
+            generate_image_slice(savedir+"gen_gan_idx_{}.h5".format(isave),isave, norm, train_loader_hr, train_loader_lr, 'slice_gan_8_l12')
+            generate_spectrum(savedir+"gen_gan_idx_{}.h5".format(isave),isave, norm, train_loader_lr, 'pred_gan_s-7.0000E-06_8_l12')
         #    pred = gan.gen_gan(imgs_lr)
         #    print(np.sum((pred-imgs_hr)**2))
         #    generate_image(pred, imgs_lr, imgs_hr, mins, maxs, i)
@@ -165,25 +164,22 @@ if(mode==1):
 if(mode==0):
     gan = PIESRGAN(training_mode=True,
                     height_lr = boxsize, width_lr=boxsize, depth_lr=boxsize,
-                    gen_lr=2.5e-5, dis_lr=2e-6,
-                    channels=1, RRDB_layers=3
+                    gen_lr=5e-5, dis_lr=2e-6,
+                    channels=3, RRDB_layers=6
                     )
-    load_model_generator(gan, savedir, 35000)
+    load_model_generator(gan, savedir, 1850)
     #gan.generator.load_weights(savedir+'generator_idx_11000.h5')
     #gan.generator = tf.keras.models.load_model(savedir+'generator_idx_100')
-    csv_logger = CSVLogger("GEN_logs_bx_32_l3.csv", append=True)
+    csv_logger = CSVLogger("regridded.csv", append=True)
     #reduce_lr = ReduceLROnPlateau(monitor='loss', factor=0.75, patience=5, min_lr=1e-6, verbose=1)
     #hvd_callback = hvd.callbacks.BroadcastGlobalVariablesCallback(0)
-    norm='minmax'
-    mins = train_loader_hr.mins
-    maxs = train_loader_hr.maxs
     idx=0
-    isave=0
-    for i in range(35001,epochs):
-        imgs_lr = do_normalisation(train_loader_lr.getTrainData_plane(48,0,idx),norm, mins, maxs)
-        imgs_hr = do_normalisation(train_loader_hr.getTrainData_plane(48,0,idx),norm,mins,maxs)
+    isave=700
+    for i in range(1851,epochs):
+        imgs_lr = do_normalisation(train_loader_lr.getData(idx),norm, mins, maxs)
+        imgs_hr = do_normalisation(train_loader_hr.getData(idx),norm,mins,maxs)
         idx=idx+1
-        if(idx>train_loader_lr.nbatches_plane-1):
+        if(idx>train_loader_lr.nbatches-1):
             idx=0
         t1=time.time()
         gan.generator.fit(
@@ -193,7 +189,7 @@ if(mode==0):
                     callbacks = [csv_logger],
                     )
         if(i%print_frequency==0):
-            print("Epoch {} out of nbatches {}  took {} secs".format(i,train_loader_lr.nbatches_plane,time.time()-t1))
+            print("Epoch {} out of nbatches {}  took {} secs".format(i,train_loader_lr.nbatches,time.time()-t1))
         if(i%save_frequency == 0):
             #gan.generator.save_weights(savedir+"generator_idx_{}.h5".format(i))
             save_model_generator(gan, savedir, i)
@@ -202,8 +198,8 @@ if(mode==0):
         if(i%fig_frequency==0):
             if(i==0):
                 continue
-            generate_image_slice(savedir+"generator_idx_{}.h5".format(isave),isave, norm, train_loader_hr, train_loader_lr, 'slice_32_l3')
-            generate_spectrum(savedir+"generator_idx_{}.h5".format(isave),isave, norm, train_loader_lr, 'pred_s-1.5000E-05_32_l3')
+            generate_image_slice(savedir+"generator_idx_{}.h5".format(isave),isave, norm, train_loader_hr, train_loader_lr, 'regredded')
+            #generate_spectrum(savedir+"generator_idx_{}.h5".format(isave),isave, norm, train_loader_lr, 'pred_regredded')
         #    pred = gan.gen_gan(imgs_lr)
         #    print(np.sum((pred-imgs_hr)**2))
         #    generate_image(pred, imgs_lr, imgs_hr, mins, maxs, i)

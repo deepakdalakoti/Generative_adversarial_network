@@ -7,6 +7,111 @@ import matplotlib.pyplot as plt
 from scipy.fftpack import fftfreq
 from util import DataLoader_s3d
 # TODO: Potential speedup by changing loop order according to mem layout
+def do_spectrum2(data, xmax, xmin, ymax, ymin, name, channels=3):
+        nxg = data.shape[0]
+        nyg = data.shape[1]
+        nt = nxg*nyg
+        u_k = np.empty([nxg, nyg,channels], dtype=complex)
+        for L in range(channels):
+            t1 = time.time()
+            u_k[:,:,L] = fftn(data[:,:,L], workers=-1)/nt
+            print("FFT finished in {} secs".format(time.time()-t1))
+
+        nhx, nhy = nxg/2+1, nyg/2+1 
+        nk = max([nhx, nhy])
+        factx = 2.0*np.pi/(xmax-xmin)
+        facty = 2.0*np.pi/(ymax-ymin)
+
+        kx_max = (nhx-1)*factx
+        ky_max = (nhy-1)*facty
+
+        kmax = np.sqrt(kx_max**2+ky_max**2)
+
+        tkeh = np.zeros(int(nk))
+        del_k = kmax/(nk-1) 
+
+        wavenumbers = np.arange(0,nk)*del_k
+
+        # Take care of fortran vs python indices
+        i_g = np.array([i + 1 for i in range(nxg)])
+        j_g = np.array([i + 1 for i in range(nyg)])
+        kx = np.where(i_g > nhx, -(nxg+1-i_g)*factx, (i_g-1)*factx)
+        ky = np.where(j_g > nhy, -(nyg+1-j_g)*facty, (j_g-1)*facty)
+
+        t1 = time.time()
+        for i in range(nxg):
+                for j in range(nyg):
+
+                        mag_k = np.sqrt(kx[i]**2 + ky[j]**2 )
+                        ik = int(min(max(np.floor(mag_k/del_k),0.0),nk-1))
+                        #for L in range(channels):
+                            #tkeh[ik] = tkeh[ik] + np.real(0.5*(u_k[i,j,L]*np.conj(u_k[i,j,L]))) 
+                        tkeh[ik] = tkeh[ik] + 0.5*np.real(np.sum(uk[i,j,:]*np.conj(u_k[i,j,:])))
+
+        print("Loop took {} secs".format(time.time()-t1))
+        spectrum = np.zeros([int(nk),2])
+        spectrum[:,0]=wavenumbers
+        spectrum[:,1]=tkeh/del_k
+        np.savetxt(name+'spectrum', spectrum)
+
+        return spectrum
+
+def do_spectrum3(data, xmax, xmin, ymax, ymin, zmax, zmin, name, channels=3):
+        nxg = data.shape[0]
+        nyg = data.shape[1]
+        nzg = data.shape[2]
+        nt = nxg*nyg*nzg
+        u_k = np.empty([nxg, nyg, nzg, channels], dtype=complex)
+        for L in range(channels):
+            t1 = time.time()
+            u_k[:,:,:,L] = fftn(data[:,:,:,L], workers=-1)/nt
+            print("FFT finished in {} secs".format(time.time()-t1))
+
+        nhx, nhy, nhz = nxg/2+1, nyg/2+1, nzg/2+1
+        nk = max([nhx, nhy, nhz])
+        factx = 2.0*np.pi/(xmax-xmin)
+        facty = 2.0*np.pi/(ymax-ymin)
+        factz = 2.0*np.pi/(zmax-zmin)
+
+        kx_max = (nhx-1)*factx
+        ky_max = (nhy-1)*facty
+        kz_max = (nhz-1)*factz
+
+        kmax = np.sqrt(kx_max**2+ky_max**2+kz_max**2)
+
+        tkeh = np.zeros(int(nk))
+        del_k = kmax/(nk-1) 
+
+        wavenumbers = np.arange(0,nk)*del_k
+
+        # Take care of fortran vs python indices
+        i_g = np.array([i + 1 for i in range(nxg)])
+        j_g = np.array([i + 1 for i in range(nyg)])
+        k_g = np.array([i + 1 for i in range(nzg)])
+        kx = np.where(i_g > nhx, -(nxg+1-i_g)*factx, (i_g-1)*factx)
+        ky = np.where(j_g > nhy, -(nyg+1-j_g)*facty, (j_g-1)*facty)
+        kz = np.where(k_g > nhz, -(nzg+1-k_g)*factz, (k_g-1)*factz)
+
+        t1 = time.time()
+        for i in range(nxg):
+                for j in range(nyg):
+                    for k in range(nzg):
+
+                        mag_k = np.sqrt(kx[i]**2 + ky[j]**2 + kz[k]**2 )
+                        ik = int(min(max(np.floor(mag_k/del_k),0.0),nk-1))
+                        #for L in range(channels):
+                            #tkeh[ik] = tkeh[ik] + np.real(0.5*(u_k[i,j,k,L]*np.conj(u_k[i,j,k,L]))) 
+                        tkeh[ik] = tkeh[ik] + 0.5*np.real(np.sum(u_k[i,j,k,:]*np.conj(u_k[i,j,k,:]))) 
+
+        print("Loop took {} secs".format(time.time()-t1))
+        spectrum = np.zeros([int(nk),2])
+        spectrum[:,0]=wavenumbers
+        spectrum[:,1]=tkeh/del_k
+        np.savetxt(name+'spectrum', spectrum)
+
+        return spectrum
+
+
 def do_spectrum(data_loader, u_k, xmax, xmin, ymax, ymin, zmax, zmin, xid, yid, zid):
 
         nt = data_loader.nxg*data_loader.nyg*data_loader.nzg
@@ -44,7 +149,7 @@ def do_spectrum(data_loader, u_k, xmax, xmin, ymax, ymin, zmax, zmin, xid, yid, 
                         mag_k = np.sqrt(kx[i]**2 + ky[j]**2 + kz[k]**2)
                         ik = int(min(max(np.floor(mag_k/del_k),0.0),nk-1))
                         for L in range(data_loader.channels):
-                            tkeh[ik] = tkeh[ik] + np.real(0.5*(u_k[i,j,L]*np.conj(u_k[i,j,L]))) 
+                            tkeh[ik] = tkeh[ik] + np.real(0.5*(u_k[i,j,k,L]*np.conj(u_k[i,j,k,L]))) 
 
         print("Loop took {} secs".format(time.time()-t1))
         return tkeh/del_k
@@ -215,8 +320,23 @@ if __name__=='__main__':
     #Filt = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/Filt_8x/filt_s-2.4500E-05', 1536, 1536, 1536, 2, 16, 32)
     #spectrum = get_velocity_spectrum(Filt, 5e-3, 0, 5e-3, 0, 5e-3, 0, 48, 'Filt_8x_s-2.4500E-05_')
 
-    DNS = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/DNS/s-1.5000E-05', 1536, 1536, 1536, 2, 16, 32, 1)
-    spectrum = get_velocity_spectrum(DNS, 5e-3, 0, 5e-3 , 0, 5e-3, 0, 48, 'DNS_all_s-1.5000E-05_')
-    Filt = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/Filt_8x/filt_s-1.5000E-05', 1536, 1536, 1536, 2, 16, 32, 1)
-    spectrum = get_velocity_spectrum(Filt, 5e-3, 0, 5e-3, 0, 5e-3, 0, 48, 'Filt_8x_all_s-1.5000E-05_')
+    #DNS = DataLoader_s3d('/scratch/w47/dkd561/s3d/data/s-5.0000E-07', 1536, 1536, 1536, 2, 16, 32, 3)
+    #spectrum = get_velocity_spectrum(DNS, 5e-3, 0, 5e-3 , 0, 5e-3, 0, 48, 'DNS_all_s-5.0000E-07_')
+    #Filt=DataLoader_s3d('/scratch/w47/share/IsotropicTurb/Filtered_Relambda_162_up_50_Lt_2mm/Filt_8x_192grid/s-7.0000E-06', 192, 192, 192, 2, 128, 16,3)
+    #DNS=DataLoader_s3d('/scratch/w47/share/IsotropicTurb/LES_Relam162/s-7.0000E-06', 192, 192, 192, 2, 128, 16,3)
+    #spectrum = get_velocity_spectrum(DNS, 5e-3, 0, 5e-3 , 0, 5e-3, 0, 48, 'Filt_all_LES_s-7.0000E-06_')
+    DNS=DataLoader_s3d('/scratch/w47/share/IsotropicTurb/DNS_Relambda_162_up_50_Lt_2mm/s-7.0000E-06', 1536, 1536, 1536, 2, 128, 16,3)
+    udata = DNS.read_parallel(48)
+    #Filtered = DNS.filter_data(8,udata,'box')
+    Filtered = DNS.smooth_3d(8, udata)
+    spectrum = do_spectrum3(Filtered, 5e-3, 0, 5e-3, 0, 5e-3, 0, 'Filt_all_smooth_7e-6_')
+
+    #Filt = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/LES_posteriori_data/s-1.5000E-05', 192, 192, 192, 2, 16, 32, 3)
+    #spectrum = get_velocity_spectrum(Filt, 5e-3, 0, 5e-3, 0, 5e-3, 0, 48, 'LES2_s-1.5000E-05_')
+
+
+    #Filt = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/Filt_8x_192grid/s-1.5000E-05', 192, 192, 192, 2, 16, 32, 3)
+    #spectrum = get_velocity_spectrum(Filt, 5e-3, 0, 5e-3, 0, 5e-3, 0, 48, 'LES4_s-1.5000E-05_')
+
+
 

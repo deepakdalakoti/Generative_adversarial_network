@@ -16,6 +16,7 @@ import glob
 from scipy.io import FortranFile
 import time 
 from scipy.fft import fftn
+import scipy
 import multiprocessing
 import ctypes
 from multiprocessing import Pool
@@ -121,7 +122,7 @@ class DataLoader_s3d():
             data_res[:,i*data.shape[1]:(i+1)*data.shape[1],:,:] = data[i,:,:,:,:]
         return data_res
 
-    def getData(self, key):
+    def getData3(self, key):
 
         if(key > self.nbatches-1):
             raise IndexError("Index out of maximum possible batches")
@@ -144,6 +145,35 @@ class DataLoader_s3d():
                 break
 
         return data
+
+    def getData(self, key):
+
+        if(key > self.nbatches-1):
+            raise IndexError("Index out of maximum possible batches")
+        data = np.empty([self.batch_size, self.boxsize, self.boxsize, self.boxsize, self.channels], dtype=np.float32)
+        nbatches_per_file = int(self.nx*self.ny*self.nz/(self.boxsize**3))
+        nbatches_total = key*self.batch_size
+        floc =  int(nbatches_total/nbatches_per_file) # Which file we are at
+        nst  =  key*self.batch_size - floc*nbatches_per_file # Where in that file to start
+        ist=0
+        while True:
+            tmp = self.readfile(floc)
+            tmp = self.reshape_array([self.boxsize, self.boxsize, self.boxsize],tmp)
+            nsamp = min(self.batch_size-ist, tmp.shape[0]-nst)
+            data[ist:nsamp+ist,:,:,:,:] = tmp[nst:nsamp+nst,:,:,:,:]
+            ist = ist+nsamp
+            nst = nst+nsamp
+            if(nst==tmp.shape[0]):
+                nst=0
+                floc=floc+1
+                if(self.floc == len(self.flist)):
+                    self.floc=0
+
+            if(ist==self.batch_size):
+                break
+
+        return data
+
 
     def getTrainData_plane(self, workers, plane, idx):
 
@@ -302,6 +332,125 @@ class DataLoader_s3d():
     def getData2(self):
         tmp = self.readfile(self.floc)
         return tmp
+
+    def filter_data(self, fact, data, filt='box'):
+
+        dimx = int(data.shape[0]/fact)
+        dimy = int(data.shape[1]/fact)
+        dimz = int(data.shape[2]/fact)
+
+        wght = np.zeros([fact, fact, fact], dtype=np.float32)
+        if(filt=='gaussian'):
+            ilo = -fact/2 + 0.5
+            sigma = fact**2
+            for i in range(fact):
+                for j in range(fact):
+                    for k in range(fact):
+                        idx, idy, idz = ilo + i, ilo+j, ilo+k
+                        wght[i,j,k] = np.exp(-(idx**2 + idy**2 + idz**2)/sigma)
+        else:
+            wght[:,:,:] = 1.0
+
+        wght = wght/np.sum(wght)
+
+        data_out = np.zeros([dimx, dimy, dimz, data.shape[3]], dtype=np.float32)
+        for i in range(dimx):
+            for j in range(dimy):
+                for k in range(dimz):
+                    ilo = i*fact
+                    ihi = (i+1)*fact
+                    jlo = j*fact
+                    jhi = (j+1)*fact
+                    klo, khi = k*fact, (k+1)*fact
+                    #data_out[i,j,k,:] = np.mean(data[ilo:ihi, jlo:jhi,klo:khi,:])
+                    data_out[i,j,k,:] = np.sum(np.multiply(data[ilo:ihi, jlo:jhi, klo:khi, :],wght[:,:,:,None]))
+
+        return data_out
+
+    def filter_data_2d(self, fact, data, sigma, filt='box'):
+        dimx = int(data.shape[0]/fact)
+        dimy = int(data.shape[1]/fact)
+
+        wght = np.zeros([fact, fact], dtype=np.float32)
+        if(filt=='gaussian'):
+            ilo = -fact/2 + 0.5
+            for i in range(fact):
+                for j in range(fact):
+                        idx, idy = ilo + i, ilo+j
+                        wght[i,j] = np.exp(-(idx**2 + idy**2)/sigma)
+        else:
+            wght[:,:] = 1.0
+
+        wght = wght/np.sum(wght)
+        data_out = np.zeros([dimx, dimy, data.shape[2]])
+
+        for i in range(dimx):
+            for j in range(dimy):
+                    ilo = i*fact
+                    ihi = (i+1)*fact
+                    jlo = j*fact
+                    jhi = (j+1)*fact
+                    #data_out[i,j,:] = np.mean(data[ilo:ihi, jlo:jhi,:])
+                    data_out[i,j,:] = np.sum(np.multiply(data[ilo:ihi, jlo:jhi, :], wght[:,:,None]))
+        return data_out
+
+    def interpolate_2d(self, fact, data):
+        dimx = int(data.shape[0]/fact)
+        dimy = int(data.shape[1]/fact)
+        x = np.linspace(0,5e-3, self.nxg)
+        y = np.linspace(0,5e-3, self.nyg)
+
+        xi = np.linspace(0, 5e-3, dimx)
+        yi = np.linspace(0, 5e-3, dimy)
+        X, Y = np.meshgrid(xi, yi, indexing ='ij')
+        X = np.reshape(X, [dimx*dimx, -1])
+        Y = np.reshape(Y, [dimx*dimx, -1])
+
+        
+        data_out = scipy.interpolate.interpn((x,y), data, (X,Y))
+        data_out =  np.reshape(data_out, [dimx, -1])
+        print(data_out.shape)
+
+        return data_out
+
+    def smooth_2d(self, fact, data):
+
+        data_out = np.zeros_like(data)
+        # Check
+        for i in range(data.shape[0]):
+            for j in range(data.shape[1]):
+                ilo = max(0, int(i-fact/2))
+                ihi = min(data.shape[0], int(i+fact/2))
+
+                jlo = max(0, int(j-fact/2))
+                jhi = min(data.shape[0], int(j+fact/2))
+
+
+                data_out[i,j,:] = np.mean(data[ilo:ihi, jlo:jhi,:], axis=(0,1))
+
+        return data_out
+
+    def smooth_3d(self, fact, data):
+
+        data_out = np.zeros_like(data)
+        # Check
+        for i in range(data.shape[0]):
+            for j in range(data.shape[1]):
+                for k in range(data.shape[2]):
+                    ilo = max(0, int(i-fact/2))
+                    ihi = min(data.shape[0], int(i+fact/2))
+
+                    jlo = max(0, int(j-fact/2))
+                    jhi = min(data.shape[1], int(j+fact/2))
+
+                    klo = max(0, int(k-fact/2))
+                    khi = min(data.shape[2], int(k+fact/2))
+
+
+                    data_out[i,j,k,:] = np.mean(data[ilo:ihi, jlo:jhi,klo:khi,:], axis=(0,1,2))
+
+        return data_out
+
 
 class UpSampling3D(Layer):
    
@@ -503,18 +652,27 @@ def Image_generator(box1,box2,box3,output_name):
     im=axs[1].imshow(box2,cmap=cmap)
     clim = im.properties()['clim']
     axs[0].imshow(box1,cmap=cmap, clim=clim)
-    axs[0].set_title('Filtered')
+    axs[0].set_title('LES')
     #axs[1].contourf(box2, levels=40)
-    axs[1].set_title('PIESRGAN')
+    axs[1].set_title('GAN')
     axs[2].imshow(box3,cmap=cmap, clim=clim)
     #axs[2].contourf(box3, levels=40)
-    axs[2].set_title('Unfiltered')
-    fig.colorbar(im, ax=axs.ravel().tolist(), shrink=0.5)
+    axs[2].set_title('DNS')
+    axs[0].set_yticklabels([])
+    axs[1].set_yticklabels([])
+    axs[2].set_yticklabels([])
+
+
+    axs[0].set_xticklabels([])
+    axs[1].set_xticklabels([])
+    axs[2].set_xticklabels([])
+
+    #fig.colorbar(im, ax=axs.ravel().tolist(), shrink=0.5)
     plt.savefig(output_name, dpi=500)
     plt.close()
 
 def Image_generator2(box1,box2,box3,output_name):
-    fig,axs = plt.subplots(3,1, figsize=(15,15))
+    fig,axs = plt.subplots(1,3, figsize=(15,15))
     cmap = 'seismic'
     #axs[0].contourf(box1, levels=40)
     '''
@@ -535,16 +693,41 @@ def Image_generator2(box1,box2,box3,output_name):
     im=axs[1].imshow(box2,cmap=cmap)
     clim = im.properties()['clim']
     axs[0].imshow(box1,cmap=cmap, clim=clim)
-    axs[0].set_title('Filtered')
+    axs[0].set_title('LES')
     #axs[1].contourf(box2, levels=40)
-    axs[1].set_title('PIESRGAN')
+    axs[1].set_title('GAN')
     axs[2].imshow(box3,cmap=cmap, clim=clim)
     #axs[2].contourf(box3, levels=40)
-    axs[2].set_title('Unfiltered')
+    axs[2].set_title('DNS')
+
+    #axs[0].set_yticklabels([])
+    axs[1].set_yticklabels([])
+    axs[2].set_yticklabels([])
+
+
+    #axs[0].set_xticklabels([])
+    axs[1].set_xticklabels([])
+    axs[2].set_xticklabels([])
+
+
     fig.colorbar(im, ax=axs.ravel().tolist(), shrink=0.5)
     plt.savefig(output_name, dpi=500)
     plt.close()
-    
+
+def Image2(box1,box2,output_name):
+    fig,axs = plt.subplots(1,2, figsize=(15,15))
+    cmap = 'seismic'
+    im=axs[1].imshow(box2,cmap=cmap)
+    clim = im.properties()['clim']
+    axs[0].imshow(box1,cmap=cmap, clim=clim)
+    axs[0].set_title('LES')
+    #axs[1].contourf(box2, levels=40)
+    axs[1].set_title('GAN')
+
+    fig.colorbar(im, ax=axs.ravel().tolist(), shrink=0.25)
+    plt.savefig(output_name, dpi=500)
+    plt.close()
+
 def read_single(readfile, idx, xst, xen, yst, yen, zst, zen):
         t1 = time.time()
         ush[xst:xen,yst:yen, zst:zen,:] = readfile(idx)
