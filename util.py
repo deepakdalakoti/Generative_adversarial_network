@@ -485,8 +485,8 @@ def subPixelConv3d(net, height_hr, width_hr, depth_hr, stepsToEnd, n_out_channel
     """ pixle-shuffling for 3d data"""
     i = net
     r = 2
-    a, b, z, c = int(height_hr/ (2 * stepsToEnd)), int(width_hr / (2 * stepsToEnd)), int(
-        depth_hr / (2 * stepsToEnd)), tf.shape(i)[4]
+    a, b, z, c = int(height_hr/ (2 ** stepsToEnd)), int(width_hr / (2 ** stepsToEnd)), int(
+        depth_hr / (2 ** stepsToEnd)), tf.shape(i)[4]
     batchsize = tf.shape(i)[0]  # Handling Dimension(None) type for undefined batch dim
     xs = tf.split(i, r, 4)  # b*h*w*d*r*r*r
     xr = tf.concat(xs, 3)  # b*h*w*(r*d)*r*r

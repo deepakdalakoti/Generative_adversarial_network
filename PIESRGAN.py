@@ -31,7 +31,7 @@ from tensorflow.keras.callbacks import TensorBoard, ModelCheckpoint, LambdaCallb
 from keras.utils import multi_gpu_model
 from tensorflow.keras.callbacks import CSVLogger
 sys.stderr = stderr
-from util import UpSampling3D, DataLoader, RandomLoader_train, Image_generator 
+from util import UpSampling3D, DataLoader, RandomLoader_train, Image_generator, subPixelConv3d
 #subPixelConv3d, DataLoader, RandomLoader_train, Image_generator
 from util import DataLoader_s3d, do_normalisation
 import h5py as h5
@@ -68,6 +68,7 @@ class PIESRGAN():
                  height_lr=16, width_lr=16, depth_lr=16,
                  gen_lr=1e-4, dis_lr=1e-7,
                  channels=3,
+                 upscaling_factor=8,
                  # VGG scaled with 1/12.75 as in paper
                  loss_weights={'percept':5e-1,'gen':5e-5, 'pixel':1e-2},
                  training_mode=True,
@@ -98,10 +99,10 @@ class PIESRGAN():
         self.depth_lr=depth_lr
         self.channels_lr = int(channels)
         self.RRDB_layers = RRDB_layers
-        # High-resolution image dimensions are identical to those of the LR, removed the upsampling block!
-        self.height_hr = int(self.height_lr )
-        self.width_hr = int(self.width_lr )
-        self.depth_hr = int(self.depth_lr )
+        # High-resolution image dimensions are upscaling_factor times the LR ones
+        self.height_hr = int(self.height_lr*self.upscaling_factor )
+        self.width_hr = int(self.width_lr*self.upscaling_factor )
+        self.depth_hr = int(self.depth_lr*self.upscaling_factor )
         self.channels_hr = int(channels)
         # Low-resolution and high-resolution shapes
         """ DNS-Data only has one channel, when only using PS field, when using u,v,w,ps, change to 4 channels """
@@ -213,12 +214,16 @@ class PIESRGAN():
         #x = Conv3D(512,kernel_size=3, strides=1, padding='same',activation=lrelu1)(x)
         #x = Conv3D(512,kernel_size=3, strides=1, padding='same',activation=lrelu1)(x)
         # Be consistent with the original paper
+        # Upsample now, for 8x
         x = Conv3D(256,kernel_size=3, strides=1, padding='same')(x)
+        x = subPixelConv3d(x, self.height_hr, self.width_hr, self.depth_hr, 3, 32)
         x = LeakyReLU(slope)(x)
         x = Conv3D(256,kernel_size=3, strides=1, padding='same')(x)
+        x = subPixelConv3d(x, self.height_hr, self.width_hr, self.depth_hr, 2, 32)
         x = LeakyReLU(slope)(x)
         #Final 2 convolutional layers
         x = Conv3D(64, kernel_size=3, strides=1, padding='same')(x)
+        x = subPixelConv3d(x, self.height_hr, self.width_hr, self.depth_hr, 1, 32)
         x = LeakyReLU(slope)(x)
         # Activation for output?
         #hr_output = Conv3D(self.channels_hr, kernel_size=3, strides=1, padding='same', activation='tanh')(x)
