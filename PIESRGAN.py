@@ -312,7 +312,7 @@ class PIESRGAN():
             mse = tf.keras.losses.MeanSquaredError(tf.keras.losses.Reduction.NONE)
             pixel_loss = tf.nn.compute_average_loss(mse(img_hr,generated_hr))
             #print(gen_loss, grad_loss)
-            total = grad_loss + gen_loss*1e-5 + pixel_loss*1.e-7 + cont_loss*0.0
+            total = grad_loss*1e2 + gen_loss*1e-4 + pixel_loss*1.e-4 + cont_loss*1e2
             return total, grad_loss, gen_loss, pixel_loss, cont_loss
             #return grad_loss+gen_loss+pixel_loss
             #return [grad_loss, gen_loss, pixel_loss]
