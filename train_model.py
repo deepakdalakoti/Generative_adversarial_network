@@ -92,9 +92,9 @@ def load_model_gan(model,savedir, idx, Gen=True, Dis=False):
 
 nxg, nyg, nzg =192, 192, 192
 batch_size=16
-boxsize=32
+boxsize=4
 datapath_train='/scratch/w47/share/IsotropicTurb'
-train_loader_hr = DataLoader_s3d(datapath_train+'/Filtered_Relambda_162_up_50_Lt_2mm/DNS_regrid_192grid/s-7.0000E-06', nxg, nyg, nzg, 2, batch_size, boxsize, 3)
+train_loader_hr = DataLoader_s3d(datapath_train+'/DNS_Relambda_162_up_50_Lt_2mm/s-7.0000E-06', 1536, 1536, 1536, 2, batch_size, 32, 3)
 train_loader_hr.get_norm_constants(48)
 
 train_loader_lr=GAN_post(datapath_train+'/Filtered_Relambda_162_up_50_Lt_2mm/Filt_8x_regrid_192grid/s-7.0000E-06', nxg, nyg, nzg, 2, batch_size, boxsize, 3, 1)
@@ -167,15 +167,15 @@ if(mode==0):
                     gen_lr=5e-5, dis_lr=2e-6,
                     channels=3, RRDB_layers=6
                     )
-    load_model_generator(gan, savedir, 1850)
+    #load_model_generator(gan, savedir, 1850)
     #gan.generator.load_weights(savedir+'generator_idx_11000.h5')
     #gan.generator = tf.keras.models.load_model(savedir+'generator_idx_100')
-    csv_logger = CSVLogger("regridded.csv", append=True)
+    csv_logger = CSVLogger("upsamp.csv", append=True)
     #reduce_lr = ReduceLROnPlateau(monitor='loss', factor=0.75, patience=5, min_lr=1e-6, verbose=1)
     #hvd_callback = hvd.callbacks.BroadcastGlobalVariablesCallback(0)
     idx=0
-    isave=700
-    for i in range(1851,epochs):
+    isave=0
+    for i in range(0,epochs):
         imgs_lr = do_normalisation(train_loader_lr.getData(idx),norm, mins, maxs)
         imgs_hr = do_normalisation(train_loader_hr.getData(idx),norm,mins,maxs)
         idx=idx+1
@@ -196,6 +196,8 @@ if(mode==0):
             #gan.generator.save(savedir+"generator_idx_{}".format(i))
             isave=i
         if(i%fig_frequency==0):
+            #continue
+
             if(i==0):
                 continue
             generate_image_slice(savedir+"generator_idx_{}.h5".format(isave),isave, norm, train_loader_hr, train_loader_lr, 'regredded')
