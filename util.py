@@ -509,10 +509,42 @@ def subPixelConv3d(net, height_hr, width_hr, depth_hr, stepsToEnd, n_out_channel
     xrr = tf.concat(xss, 2)  # b*h*(r*w)*(r*d)*r
     xsss = tf.split(xrr, r, 4)
     xrrr = tf.concat(xsss,1)
+    print(xrrr.shape, a, b, z, batchsize)
     x = tf.reshape(xrrr, (batchsize, r * a, r * b, r * z, n_out_channel))  # b*(r*h)*(r*w)*(r*d)*n_out 
 
     return x
 
+def phaseShift(inputs, shape_1, shape_2):
+    # Tackle the condition when the batch is None
+    X = tf.reshape(inputs, shape_1)
+    X = tf.transpose(X, [0, 1, 4, 2, 5, 3, 6])
+
+    return tf.reshape(X, shape_2)
+
+
+# The implementation of PixelShuffler
+def pixelShuffler(inputs, scale=2):
+    # size = tf.shape(inputs)
+    size = inputs.get_shape().as_list()
+    #batch_size = size[0]
+    batch_size = tf.shape(inputs)[0]
+    d = size[1]
+    h = size[2]
+    w = size[3]
+    c = size[4]
+
+    # Get the target channel size
+    channel_target = c // (scale * scale * scale)
+    channel_factor = c // channel_target
+
+    shape_1 = [batch_size, d, h, w, scale, scale, scale]
+    shape_2 = [batch_size, d * scale, h * scale, w * scale, 1]
+
+    # Reshape and transpose for periodic shuffling for each channel
+    input_split = tf.split(inputs, channel_target, axis=4)
+    output = tf.concat([phaseShift(x, shape_1, shape_2) for x in input_split], axis=4)
+
+    return output
 
 
 def DataLoader(datapath,filter_nr,datatype,idx,batch_size,boxsize):
@@ -684,7 +716,7 @@ def Image_generator(box1,box2,box3,output_name):
     axs[1].set_xticklabels([])
     axs[2].set_xticklabels([])
 
-    #fig.colorbar(im, ax=axs.ravel().tolist(), shrink=0.5)
+    fig.colorbar(im, ax=axs.ravel().tolist(), shrink=0.25)
     plt.savefig(output_name, dpi=500)
     plt.close()
 

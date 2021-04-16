@@ -33,7 +33,7 @@ from tensorflow.keras.callbacks import CSVLogger
 sys.stderr = stderr
 from util import UpSampling3D, DataLoader, RandomLoader_train, Image_generator, subPixelConv3d
 #subPixelConv3d, DataLoader, RandomLoader_train, Image_generator
-from util import DataLoader_s3d, do_normalisation
+from util import DataLoader_s3d, do_normalisation, pixelShuffler
 import h5py as h5
 import numpy as np
 '''Use Horovod in case of multi nodes parallelizations'''
@@ -201,7 +201,9 @@ class PIESRGAN():
         #with self.mirrored_strategy.scope():
         lr_input = Input(shape=self.shape_lr)
         # Pre-residual
-        x_start = Conv3D(64, data_format="channels_last", kernel_size=3, strides=1, padding='same')(lr_input)
+        #x_start = Conv3D(64, data_format="channels_last", kernel_size=3, strides=1, padding='same')(lr_input)
+        # kernel size 9 in original paper here
+        x_start = Conv3D(64, data_format="channels_last", kernel_size=9, strides=1, padding='same')(lr_input)
         x_start = LeakyReLU(slope)(x_start)
 
         # Residual-in-Residual Dense Block
@@ -216,18 +218,25 @@ class PIESRGAN():
         # Be consistent with the original paper
         # Upsample now, for 8x
         x = Conv3D(256,kernel_size=3, strides=1, padding='same')(x)
-        x = subPixelConv3d(x, self.height_hr, self.width_hr, self.depth_hr, 3, 32)
+        #x = subPixelConv3d(x, self.height_hr, self.width_hr, self.depth_hr, 2, 32)
+        x = pixelShuffler(x)
         x = LeakyReLU(slope)(x)
+
         x = Conv3D(256,kernel_size=3, strides=1, padding='same')(x)
-        x = subPixelConv3d(x, self.height_hr, self.width_hr, self.depth_hr, 2, 32)
+        #x = subPixelConv3d(x, self.height_hr, self.width_hr, self.depth_hr, 1, 32)
+        x = pixelShuffler(x)
         x = LeakyReLU(slope)(x)
+
         #Final 2 convolutional layers
         x = Conv3D(256, kernel_size=3, strides=1, padding='same')(x)
-        x = subPixelConv3d(x, self.height_hr, self.width_hr, self.depth_hr, 1, 32)
+        #x = subPixelConv3d(x, self.height_hr, self.width_hr, self.depth_hr, 1, 32)
         x = LeakyReLU(slope)(x)
+
         # Activation for output?
         #hr_output = Conv3D(self.channels_hr, kernel_size=3, strides=1, padding='same', activation='tanh')(x)
-        hr_output = Conv3D(self.channels_hr, kernel_size=3, strides=1, padding='same')(x)
+        #hr_output = Conv3D(self.channels_hr, kernel_size=3, strides=1, padding='same')(x)
+        # 9 kernel size for last layer in original paper
+        hr_output = Conv3D(self.channels_hr, kernel_size=9, strides=1, padding='same')(x)
 
         # Create model and compile
         model = Model(inputs=lr_input, outputs=hr_output)
