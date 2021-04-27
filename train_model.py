@@ -105,12 +105,12 @@ train_loader_lr=GAN_post(datapath_train+'/Filtered_Relambda_162_up_50_Lt_2mm/Fil
 
 epochs=50000000
 print_frequency = 200
-save_frequency = 50
+save_frequency = 500
 fig_frequency = 50
-savedir = './data/upsamp/'
+savedir = './data/upsamp_8x/'
 #mirrored_strategy = tf.distribute.MirroredStrategy()
 mode = 0 # 1 = GAN, 0 = generator
-norm='minmax'
+norm='std'
 mins = train_loader_hr.mins
 maxs = train_loader_hr.maxs
 
@@ -164,18 +164,18 @@ if(mode==1):
 if(mode==0):
     gan = PIESRGAN(training_mode=True,
                     height_lr = boxsize, width_lr=boxsize, depth_lr=boxsize,
-                    gen_lr=1e-5, dis_lr=2e-6,
+                    gen_lr=2.5e-5, dis_lr=2e-6,
                     channels=3, RRDB_layers=6
                     )
-    #load_model_generator(gan, savedir, 1000)
+    load_model_generator(gan, savedir, 26000)
     #gan.generator.load_weights(savedir+'generator_idx_11000.h5')
     #gan.generator = tf.keras.models.load_model(savedir+'generator_idx_100')
-    csv_logger = CSVLogger("upsamp.csv", append=True)
+    csv_logger = CSVLogger("upsamp_8x.csv", append=True)
     #reduce_lr = ReduceLROnPlateau(monitor='loss', factor=0.75, patience=5, min_lr=1e-6, verbose=1)
     #hvd_callback = hvd.callbacks.BroadcastGlobalVariablesCallback(0)
     idx=0
     isave=0
-    for i in range(0,epochs):
+    for i in range(26001,epochs):
         imgs_lr = do_normalisation(train_loader_lr.getTrainData(idx),norm, mins, maxs)
         imgs_hr = do_normalisation(train_loader_hr.getTrainData(idx),norm,mins,maxs)
         idx=idx+1
