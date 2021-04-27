@@ -180,10 +180,7 @@ class DataLoader_s3d():
         
         if(not self.init_train):
             print(self.init_train,"INIT")
-            if(self.nxg==1536):
-                udata = np.load('udata.npy')
-            else:
-                udata  = self.read_parallel(48)
+            udata  = self.read_parallel(48)
             self.udata = self.reshape_array([self.boxsize, self.boxsize, self.boxsize], udata)
 
             self.init_train=1
@@ -489,13 +486,35 @@ class UpSampling3D(Layer):
                                 self.size[0], self.size[1], self.size[2],
                                 self.data_format)
 
+    def build(self, input_shape):
+        last_dim = input_shape[-1]
+        factor = self.size[0]*self.size[1]*self.size[2]
+        if last_dim % (factor) != 0:
+            raise ValueError('Channel ' + str(last_dim) + ' should be of '
+                             'integer times of upsampling_factor^3: ' +
+                             str(factor) + '.')
+
     def get_config(self):
         config = {'size': self.size,
                   'data_format': self.data_format}
         base_config = super(UpSampling3D, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
         
-        
+def subPixelConv3d2(net, n_out_channels):
+    batchsize = tf.shape(net)[0]
+    shape = net.shape
+    #print(shape)
+    x = tf.reshape(net, (batchsize, shape[1]*2, shape[2]*2, shape[3]*2, n_out_channels))
+    return x
+
+def subPixelConv3d3(net):
+    #batchsize = tf.shape(net)[0]
+    #shape = net.shape
+    #print(shape)
+    #x = tf.reshape(net, (batchsize, shape[1]*2, shape[2]*2, shape[3]*2, n_out_channels))
+    x = tf.depth_to_space(x,2)
+    return x
+
 def subPixelConv3d(net, height_hr, width_hr, depth_hr, stepsToEnd, n_out_channel):
     """ pixle-shuffling for 3d data"""
     i = net
@@ -504,11 +523,11 @@ def subPixelConv3d(net, height_hr, width_hr, depth_hr, stepsToEnd, n_out_channel
         depth_hr / (2 ** stepsToEnd)), tf.shape(i)[4]
     batchsize = tf.shape(i)[0]  # Handling Dimension(None) type for undefined batch dim
     xs = tf.split(i, r, 4)  # b*h*w*d*r*r*r
-    xr = tf.concat(xs, 3)  # b*h*w*(r*d)*r*r
+    xr = tf.concat(xs, 1)  # b*h*w*(r*d)*r*r
     xss = tf.split(xr, r, 4)  # b*h*w*(r*d)*r*r
     xrr = tf.concat(xss, 2)  # b*h*(r*w)*(r*d)*r
     xsss = tf.split(xrr, r, 4)
-    xrrr = tf.concat(xsss,1)
+    xrrr = tf.concat(xsss,3)
     print(xrrr.shape, a, b, z, batchsize)
     x = tf.reshape(xrrr, (batchsize, r * a, r * b, r * z, n_out_channel))  # b*(r*h)*(r*w)*(r*d)*n_out 
 

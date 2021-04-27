@@ -6,6 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.fftpack import fftfreq
 from util import DataLoader_s3d
+from scipy.stats import binned_statistic
 # TODO: Potential speedup by changing loop order according to mem layout
 def do_spectrum2(data, xmax, xmin, ymax, ymin, name, channels=3):
         nxg = data.shape[0]
@@ -92,25 +93,65 @@ def do_spectrum3(data, xmax, xmin, ymax, ymin, zmax, zmin, name, channels=3):
         ky = np.where(j_g > nhy, -(nyg+1-j_g)*facty, (j_g-1)*facty)
         kz = np.where(k_g > nhz, -(nzg+1-k_g)*factz, (k_g-1)*factz)
 
-        t1 = time.time()
-        for i in range(nxg):
-                for j in range(nyg):
-                    for k in range(nzg):
+        mag_k = np.zeros_like(u_k)
 
-                        mag_k = np.sqrt(kx[i]**2 + ky[j]**2 + kz[k]**2 )
-                        ik = int(min(max(np.floor(mag_k/del_k),0.0),nk-1))
+        t1 = time.time()
+        #mag_k = np.array([kx[i]**2 + ky[j]**2 + kz[k]**2 for (i,j,k) in np.ndindex(nxg, nyg, nzg)] )
+        #mag_k = np.array([[[np.sqrt(kx[i]**2 + ky[j]**2 + kz[k]**2) for k in range(nzg)] for j in range(nyg)] for i in range(nxg)])
+        #print(mag_k.shape)
+        #for i in range(nxg):
+        #        for j in range(nyg):
+        #            for k in range(nzg):
+
+        #                mag_k[i,j,k] = np.sqrt(kx[i]**2 + ky[j]**2 + kz[k]**2 )
+                        #ik = int(min(max(np.floor(mag_k/del_k),0.0),nk-1))
                         #for L in range(channels):
                             #tkeh[ik] = tkeh[ik] + np.real(0.5*(u_k[i,j,k,L]*np.conj(u_k[i,j,k,L]))) 
-                        tkeh[ik] = tkeh[ik] + 0.5*np.real(np.sum(u_k[i,j,k,:]*np.conj(u_k[i,j,k,:]))) 
+                        #tkeh[ik] = tkeh[ik] + 0.5*np.real(np.sum(u_k[i,j,k,:]*np.conj(u_k[i,j,k,:]))) 
+        print("Done first loop")
+        ke = 0.5*np.real(np.multiply(u_k, np.conj(u_k)))
+        print(ke.shape)
+        print(kx.shape)
+        #mag_k = mag_k.ravel()
+        #ke =  ke.ravel()
+        #print(ke.shape)
+        #tkeh, _, _    = binned_statistic(mag_k, ke, statistic = 'sum', bins=nk)
+        mag_k_max = np.sqrt(np.max(kx)**2 + np.max(ky)**2 + np.max(kz)**2)
+
+        ix = int(np.ceil(nxg/64))
+        iy = int(np.ceil(nyg/64))
+        iz = int(np.ceil(nzg/64))
+        res = []
+        p = Pool(48)
+        for i in range(ix):
+            for j in range(iy):
+                for k in range(iz):
+                    r=p.apply_async(do_comp, args=(kx[i*64:(i+1)*64], ky[j*64:(j+1)*64], kz[k*64:(k+1)*64], \
+                                  ke[i*64:(i+1)*64,j*64:(j+1)*64,k*64:(k+1)*64], nk, (0, mag_k_max)), error_callback=print_error)
+                    res.append(r)
+
+        p.close()
+        p.join()
+
 
         print("Loop took {} secs".format(time.time()-t1))
         spectrum = np.zeros([int(nk),2])
+        for i in range(len(res)):
+            spectrum[:,1] = spectrum[:,1] + res[i].get()
         spectrum[:,0]=wavenumbers
-        spectrum[:,1]=tkeh/del_k
+        spectrum[:,1]=spectrum[:,1]/del_k
         np.savetxt(name+'spectrum', spectrum)
 
         return spectrum
-
+def do_comp(kx, ky, kz, ke, nk, rng):
+        nxg = kx.shape[0]
+        nyg = ky.shape[0]
+        nzg = kz.shape[0]
+        mag_k = np.array([[[np.sqrt(kx[i]**2 + ky[j]**2 + kz[k]**2) for k in range(nzg)] for j in range(nyg)] for i in range(nxg)])
+        ke = ke.ravel()
+        mag_k = mag_k.ravel()
+        tkeh, _, _    = binned_statistic(mag_k, ke, statistic = 'sum', bins=nk, range=rng)
+        return tkeh
 
 def do_spectrum(data_loader, u_k, xmax, xmin, ymax, ymin, zmax, zmin, xid, yid, zid):
 
