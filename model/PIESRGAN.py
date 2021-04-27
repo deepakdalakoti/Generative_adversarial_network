@@ -8,10 +8,8 @@ import sys
 import pickle      # object-->byte system
 import datetime    # manipulating dates and times
 import numpy as np
-
+sys.path.insert(0,'../utils')
 # Import keras + tensorflow without the "Using XX Backend" message
-stderr = sys.stderr
-sys.stderr = open(os.devnull, 'w')
 import gc
 import tensorflow as tf
 #import tensorlayer as tl
@@ -30,10 +28,9 @@ from tensorflow.keras import backend as K           #campatability
 from tensorflow.keras.callbacks import TensorBoard, ModelCheckpoint, LambdaCallback
 from keras.utils import multi_gpu_model
 from tensorflow.keras.callbacks import CSVLogger
-sys.stderr = stderr
-from util import UpSampling3D, DataLoader, RandomLoader_train, Image_generator, subPixelConv3d, subPixelConv3d2
+from utils.util import UpSampling3D, DataLoader, RandomLoader_train, Image_generator, subPixelConv3d, subPixelConv3d2
 #subPixelConv3d, DataLoader, RandomLoader_train, Image_generator
-from util import DataLoader_s3d, do_normalisation, pixelShuffler
+from utils.util import DataLoader_s3d, do_normalisation, pixelShuffler
 import h5py as h5
 import numpy as np
 '''Use Horovod in case of multi nodes parallelizations'''

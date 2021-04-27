@@ -1,5 +1,7 @@
-from util import DataLoader_s3d, do_normalisation
-from PIESRGAN import PIESRGAN
+from .util import DataLoader_s3d, do_normalisation
+import sys
+sys.path.insert(0,'../model')
+from model.PIESRGAN import PIESRGAN
 import multiprocessing 
 from multiprocessing import Pool
 #import ray
@@ -8,10 +10,10 @@ import numpy as np
 import time
 import dill
 import os
-from util import do_normalisation, do_inverse_normalisation
+from .util import do_normalisation, do_inverse_normalisation
 import pickle
 from scipy.fft import fftn
-from spectrum import do_spectrum, do_spectrum_slice
+from .spectrum import do_spectrum, do_spectrum_slice
 #import pathos.multiprocessing as pm
 # TO DO : add channels to dataloader
 RRDB_layers = 6
