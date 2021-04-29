@@ -2,18 +2,13 @@
 # -*- coding: utf-8 -*-
 # ! /usr/bin/python
 import os          # enables interactions with the operating system
-#os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-#os.environ["CUDA_VISIBLE_DEVICES"]='0,1'
 import sys
 import pickle      # object-->byte system
 import datetime    # manipulating dates and times
 import numpy as np
 sys.path.insert(0,'../utils')
-# Import keras + tensorflow without the "Using XX Backend" message
 import gc
 import tensorflow as tf
-#import tensorlayer as tl
-#from tensorlayer.layers import Conv3dLayer, LambdaLayer
 from keras.utils import plot_model
 from keras import layers
 from keras import Model
@@ -29,7 +24,6 @@ from tensorflow.keras.callbacks import TensorBoard, ModelCheckpoint, LambdaCallb
 from keras.utils import multi_gpu_model
 from tensorflow.keras.callbacks import CSVLogger
 from utils.util import UpSampling3D, DataLoader, RandomLoader_train, Image_generator, subPixelConv3d, subPixelConv3d2
-#subPixelConv3d, DataLoader, RandomLoader_train, Image_generator
 from utils.util import DataLoader_s3d, do_normalisation, pixelShuffler
 import h5py as h5
 import numpy as np
@@ -70,7 +64,8 @@ class PIESRGAN():
                  loss_weights={'percept':5e-1,'gen':5e-5, 'pixel':1e-2},
                  training_mode=True,
                  refer_model=None,
-                 RRDB_layers=3
+                 RRDB_layers=3,
+                 logdir = './logs'
                  ):
         """
         :param int height_lr: Height of low-resolution DNS data
@@ -113,16 +108,14 @@ class PIESRGAN():
         
         # Scaling of losses
         self.loss_weights = loss_weights
-        
+        self.writer = tf.summary.create_file_writer(logdir) 
         # Gan setup settings
-        self.gan_loss = 'mse'
-        self.dis_loss = 'binary_crossentropy'
-        
         # Build & compile the generator network
         with self.mirrored_strategy.scope():
             self.generator = self.build_generator()
-            self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.gen_lr,beta_1=0.9,beta_2=0.999)
-            #self.compile_generator(self.generator)
+            #self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.gen_lr,beta_1=0.9,beta_2=0.999)
+            #self.optimizer = tf.keras.optimizers.RMSprop(learning_rate=self.gen_lr)
+            self.compile_generator(self.generator)
             #self.refer_model = refer_model
             # If training, build rest of GAN network
         #    if training_mode:
@@ -153,37 +146,48 @@ class PIESRGAN():
          First define seperate blocks then assembly them together
         :return: the compiled model
         """
-        #w_init = tf.random_normal_initializer(stddev=0.02)
-        w_init = tf.keras.initializers.HeNormal()
+        def _kernel_init(scale=1.0, seed=None):
+            """He normal initializer with scale."""
+            scale = 2. * scale
+            return tf.keras.initializers.VarianceScaling(
+            scale=scale, mode='fan_in', distribution="truncated_normal", seed=seed)
+        #w_init = tf.random_normal_initializer(stddev=2.0)
+        w_init = _kernel_init(scale=0.1)
+
         #w_init = tf.keras.initializers.GlorotUniform()
         height_hr=self.height_hr
         width_hr=self.width_hr
         depth_hr=self.depth_hr
         beta = 0.2
+        beta1 = 1.0
         slope= 0.1
         def dense_block(input):
-            x1 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(input)
-            #x1 = BatchNormalization()(x1)
-            x1 = LeakyReLU(slope)(x1)
+            x1 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init, name='d1')(input)
+            x1 = BatchNormalization()(x1)
+            #x1 = LeakyReLU(slope)(x1)
+            x1 = PReLU()(x1)
             x1 = Concatenate()([input, x1])
 
-            x2 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x1)
-            #x2 = BatchNormalization()(x2)
-            x2 = LeakyReLU(slope)(x2)
+            x2 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init, name='d2')(x1)
+            x2 = BatchNormalization()(x2)
+            x2 = PReLU()(x2)
+            #x2 = LeakyReLU(slope)(x2)
             x2 = Concatenate()([input, x1, x2])
 
-            x3 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x2)
-            #x3 = BatchNormalization()(x3)
-            x3 = LeakyReLU(slope)(x3)
+            x3 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init, name='d3')(x2)
+            x3 = BatchNormalization()(x3)
+            #x3 = LeakyReLU(slope)(x3)
+            x3 = PReLU()(x3)
             x3 = Concatenate()([input, x1, x2, x3])
 
-            x4 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x3)
-            #x4 = BatchNormalization()(x4)
-            x4 = LeakyReLU(slope)(x4)
+            x4 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init, name='d4')(x3)
+            x4 = BatchNormalization()(x4)
+            x4 = PReLU()(x4)
+            #x4 = LeakyReLU(slope)(x4)
             x4 = Concatenate()([input, x1, x2, x3, x4])  #added x3, which ESRGAN didn't include
 
-            x5 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x4)
-            #x5 = BatchNormalization()(x5)
+            x5 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init, name='d5')(x4)
+            x5 = BatchNormalization()(x5)
             x5 = Lambda(lambda x: x * beta)(x5)
             """here: assumed beta=0.2"""
             x = Add()([x5, input])
@@ -192,8 +196,8 @@ class PIESRGAN():
         def RRDB(input, layers=12):
             # How many layers?
             x = dense_block(input)
-            for i in range(layers-1):
-                x = dense_block(x)
+            #for i in range(layers-1):
+            #    x = dense_block(x)
             #x = dense_block(x)
             """here: assumed beta=0.2 as well"""
             x = Lambda(lambda x: x * beta)(x)
@@ -231,26 +235,28 @@ class PIESRGAN():
 
         # Post-residual block
         x = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x)
-        #x = BatchNormalization()(x)
-        x = Lambda(lambda x: x * beta)(x)
+        x = BatchNormalization()(x)
+        x = Lambda(lambda x: x * beta1)(x)
         x = Add()([x, x_start])
         #x = Conv3D(512,kernel_size=3, strides=1, padding='same',activation=lrelu1)(x)
         #x = Conv3D(512,kernel_size=3, strides=1, padding='same',activation=lrelu1)(x)
         # Be consistent with the original paper
         # Upsample now, for 8x
-        x = Conv3D(256,kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x)
-        #x = subPixelConv3d(x, self.height_hr, self.width_hr, self.depth_hr, 3, 32)
+        x = Conv3D(256,kernel_size=3, strides=1, padding='same', kernel_initializer=w_init, name='last2')(x)
+        #x = subPixelConv3d(x, self.height_hr, self.width_hr, self.depth_hr, 2, 32)
         #x = subPixelConv3d2(x, 32)
         x = pixelShuffler(x, scale=2)
         #x = Conv3DTranspose(filters = 32, kernel_size=6, strides=2, padding='same')(x)
-        x = LeakyReLU(slope)(x)
+        #x = LeakyReLU(slope)(x)
+        x = PReLU()(x)
 
-        x = Conv3D(256,kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x)
-        #x = subPixelConv3d(x, self.height_hr, self.width_hr, self.depth_hr, 2, 32)
+        x = Conv3D(256,kernel_size=3, strides=1, padding='same', kernel_initializer=w_init, name='last1')(x)
+        #x = subPixelConv3d(x, self.height_hr, self.width_hr, self.depth_hr, 1, 32)
         #x = subPixelConv3d2(x, 32)
         #x = Conv3DTranspose(filters = 32, kernel_size=6, strides=2, padding='same')(x)
         x = pixelShuffler(x)
-        x = LeakyReLU(slope)(x)
+        #x = LeakyReLU(slope)(x)
+        x = PReLU()(x)
 
         #x = Conv3D(16,kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x)
         #x = Conv3D(8,kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x)
@@ -270,7 +276,7 @@ class PIESRGAN():
         #hr_output = Conv3D(self.channels_hr, kernel_size=3, strides=1, padding='same', activation='tanh')(x)
         #hr_output = Conv3D(self.channels_hr, kernel_size=3, strides=1, padding='same')(x)
         # 9 kernel size for last layer in original paper
-        hr_output = Conv3D(self.channels_hr, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x)
+        hr_output = Conv3D(self.channels_hr, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init, name='last')(x)
 
         # Create model and compile
         model = Model(inputs=lr_input, outputs=hr_output)
@@ -415,7 +421,7 @@ class PIESRGAN():
         def grad_loss_gen(y_true,y_pred):
             #mse = tf.keras.losses.MeanSquaredError(reduction=tf.keras.losses.Reduction.NONE)
             #total_loss = mse(y_true,y_pred)
-            total_loss = tf.math.reduce_mean(tf.math.square(y_true-y_pred), axis=(1,2,3,4))
+            total_loss = tf.math.reduce_mean(tf.math.abs(y_true-y_pred), axis=(1,2,3,4))
             return tf.nn.compute_average_loss(total_loss, global_batch_size=self.batch_size)
 
         with tf.GradientTape() as gen_tape:
@@ -423,7 +429,6 @@ class PIESRGAN():
             loss = grad_loss_gen(img_hr, generated_hr)
         
         gradients_of_generator = gen_tape.gradient(loss, self.generator.trainable_variables)
-        #print(loss)
         self.optimizer.apply_gradients(zip(gradients_of_generator, self.generator.trainable_variables))
 
         return loss
@@ -432,6 +437,12 @@ class PIESRGAN():
     def distributed_train_gen(self, imgs_lr,  imgs_hr):
         total_loss_per = self.mirrored_strategy.run(self.train_gen_step, args=(imgs_lr, imgs_hr,))
         total_loss = self.mirrored_strategy.reduce(tf.distribute.ReduceOp.SUM, total_loss_per,axis=None)
+        #with self.writer.as_default():
+        #    tf.summary.scalar("batch_loss", total_loss, step=ep)
+        #    for weights in self.generator.trainable_weights:
+        #        tf.summary.histogram(weights.name, data=weights, step=ep)
+
+
         return total_loss
  
 
@@ -480,7 +491,7 @@ class PIESRGAN():
         #self.optimizer = tf.keras.optimizers.RMSprop(learning_rate=self.gen_lr)
         #optimizer = hvd.DistributedOptimizer(optimizer)
         model.compile(
-            loss=grad_loss,
+            loss='mae',
             optimizer=self.optimizer,
             metrics=['mse'],
             #experimental_run_tf_function=False

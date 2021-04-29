@@ -21,6 +21,7 @@ import multiprocessing
 import ctypes
 from multiprocessing import Pool
 import matplotlib.pyplot as plt
+import pickle
 #from PIESRGAN import PIESRGAN
 def do_normalisation(data,which, m1, m2):
 
@@ -463,6 +464,47 @@ class DataLoader_s3d():
 
         return data_out
 
+class write_all_wghts(tf.keras.callbacks.Callback):
+    ''' Write model weights and optimizer state'''
+    def __init__(self,write_freq, write_dir, prefix, epoch):
+        self.write_freq=write_freq
+        self.write_dir = write_dir
+        self.prefix = prefix
+        self.epoch = epoch
+        try:
+            os.makedirs(self.write_dir)
+            print("Created {} directory".format(self.write_dir))
+        except FileExistsError:
+            print("Directory {} already exists".format(self.write_dir))
+        
+    def on_epoch_end(self, epoch, logs=None):
+        self.epoch = self.epoch+1
+        if(self.epoch%self.write_freq==0):
+            self.model.save_weights(self.write_dir+self.prefix+'_{}.h5'.format(self.epoch))
+            opt_wght = self.model.optimizer.get_weights()
+            pickle.dump(opt_wght,open(self.write_dir+self.prefix+'_opt_idx_{}.h5'.format(self.epoch),'wb'))
+
+class tensorboard_stats(tf.keras.callbacks.Callback):
+    ''' Write stats for tensorboard'''
+    def __init__(self, write_freq, write_dir, epoch):
+        self.write_freq=write_freq
+        self.write_dir = write_dir
+        self.epoch = epoch
+        try:
+            os.makedirs(self.write_dir)
+            print("Created {} directory".format(self.write_dir))
+        except FileExistsError:
+            print("Directory {} already exists".format(self.write_dir))
+        
+        self.writer = tf.summary.create_file_writer(self.write_dir)
+    def on_epoch_end(self, epoch, logs=None):
+        self.epoch = self.epoch+1
+        if(self.epoch%self.write_freq==0):
+            with self.writer.as_default():
+                for idx in logs:
+                    tf.summary.scalar(idx, logs[idx], step= self.epoch)
+                for weights in self.model.trainable_weights:
+                    tf.summary.histogram(weights.name, data=weights, step=self.epoch)
 
 class UpSampling3D(Layer):
    
@@ -807,3 +849,5 @@ def read_single(readfile, idx, xst, xen, yst, yen, zst, zen):
 def print_error(err):
     print(err)
     return
+
+
