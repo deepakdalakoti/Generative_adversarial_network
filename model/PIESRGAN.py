@@ -17,9 +17,7 @@ from keras.layers import Input, Activation, Add, Concatenate, Multiply
 from keras.layers import BatchNormalization, LeakyReLU, PReLU, Conv2D, Dense, Conv3D,ZeroPadding3D, Flatten
 from keras.layers import UpSampling2D, Lambda, Dropout, Conv3DTranspose
 from keras.optimizers import Adam, RMSprop
-from keras.applications.vgg19 import preprocess_input
-from keras.utils.data_utils import OrderedEnqueuer
-from tensorflow.keras import backend as K           #campatability
+from tensorflow.keras import backend as K       
 from tensorflow.keras.callbacks import TensorBoard, ModelCheckpoint, LambdaCallback
 from keras.utils import multi_gpu_model
 from tensorflow.keras.callbacks import CSVLogger
@@ -27,12 +25,9 @@ from utils.util import UpSampling3D, DataLoader, RandomLoader_train, Image_gener
 from utils.util import DataLoader_s3d, do_normalisation, pixelShuffler
 import h5py as h5
 import numpy as np
-'''Use Horovod in case of multi nodes parallelizations'''
-#import horovod.keras as hvd
-#import horovod.tensorflow.keras as hvd
-
 import time
 import logging
+
 def lrelu1(x):
     return tf.maximum(x, 0.25 * x)
 def lrelu2(x):
@@ -75,14 +70,8 @@ class PIESRGAN():
         :param int gen_lr: Learning rate of generator
         :param int dis_lr: Learning rate of discriminator
         """
-        #hvd.init()
-
-        #gpus = tf.config.experimental.list_physical_devices('GPU')
-        #for gpu in gpus:
-        #    tf.config.experimental.set_memory_growth(gpu, True)
-        #if gpus:
-        #    tf.config.experimental.set_visible_devices(gpus[hvd.local_rank()], 'GPU')
-
+        # Mirrored strategy for shared memory parallalism
+        # See tensorflow docs for details
         self.mirrored_strategy = tf.distribute.MirroredStrategy()
         self.upscaling_factor=upscaling_factor
         # Low-resolution image dimensions
@@ -113,18 +102,7 @@ class PIESRGAN():
         # Build & compile the generator network
         with self.mirrored_strategy.scope():
             self.generator = self.build_generator()
-            #self.optimizer = tf.keras.optimizers.Adam(learning_rate=self.gen_lr,beta_1=0.9,beta_2=0.999)
-            #self.optimizer = tf.keras.optimizers.RMSprop(learning_rate=self.gen_lr)
             self.compile_generator(self.generator)
-            #self.refer_model = refer_model
-            # If training, build rest of GAN network
-        #    if training_mode:
-        #        self.discriminator = self.build_discriminator()
-        #        self.compile_discriminator(self.discriminator)
-        #        self.RaGAN = self.build_RaGAN()
-        #        self.piesrgan = self.build_piesrgan()
-                #self.compile_discriminator(self.RaGAN)
-                #self.compile_piesrgan(self.piesrgan)
                     
     def save_weights(self, filepath, e=None):
         """Save the generator and discriminator networks"""
@@ -151,10 +129,9 @@ class PIESRGAN():
             scale = 2. * scale
             return tf.keras.initializers.VarianceScaling(
             scale=scale, mode='fan_in', distribution="truncated_normal", seed=seed)
-        #w_init = tf.random_normal_initializer(stddev=2.0)
+        # Smaller initialization helps convergence
         w_init = _kernel_init(scale=0.1)
 
-        #w_init = tf.keras.initializers.GlorotUniform()
         height_hr=self.height_hr
         width_hr=self.width_hr
         depth_hr=self.depth_hr
@@ -162,31 +139,27 @@ class PIESRGAN():
         beta1 = 1.0
         slope= 0.1
         def dense_block(input):
-            x1 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init, name='d1')(input)
+            x1 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(input)
             x1 = BatchNormalization()(x1)
-            #x1 = LeakyReLU(slope)(x1)
             x1 = PReLU()(x1)
             x1 = Concatenate()([input, x1])
 
-            x2 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init, name='d2')(x1)
+            x2 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x1)
             x2 = BatchNormalization()(x2)
             x2 = PReLU()(x2)
-            #x2 = LeakyReLU(slope)(x2)
             x2 = Concatenate()([input, x1, x2])
 
-            x3 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init, name='d3')(x2)
+            x3 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x2)
             x3 = BatchNormalization()(x3)
-            #x3 = LeakyReLU(slope)(x3)
             x3 = PReLU()(x3)
             x3 = Concatenate()([input, x1, x2, x3])
 
-            x4 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init, name='d4')(x3)
+            x4 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x3)
             x4 = BatchNormalization()(x4)
             x4 = PReLU()(x4)
-            #x4 = LeakyReLU(slope)(x4)
             x4 = Concatenate()([input, x1, x2, x3, x4])  #added x3, which ESRGAN didn't include
 
-            x5 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init, name='d5')(x4)
+            x5 = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x4)
             x5 = BatchNormalization()(x5)
             x5 = Lambda(lambda x: x * beta)(x5)
             """here: assumed beta=0.2"""
@@ -196,9 +169,8 @@ class PIESRGAN():
         def RRDB(input, layers=12):
             # How many layers?
             x = dense_block(input)
-            #for i in range(layers-1):
-            #    x = dense_block(x)
-            #x = dense_block(x)
+            for i in range(layers-1):
+                x = dense_block(x)
             """here: assumed beta=0.2 as well"""
             x = Lambda(lambda x: x * beta)(x)
             out = Add()([x, input])
@@ -218,74 +190,40 @@ class PIESRGAN():
 
         """----------------Assembly the generator-----------------"""
         # Input low resolution image
-        #lr_input = Input(shape=(None, None, None,3))
-        #with self.mirrored_strategy.scope():
         lr_input = Input(shape=self.shape_lr)
         # Pre-residual
-        #x_start = Conv3D(64, data_format="channels_last", kernel_size=3, strides=1, padding='same')(lr_input)
         # kernel size 9 in original paper here
         x_start = Conv3D(64, data_format="channels_last", kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(lr_input)
         x_start = LeakyReLU(slope)(x_start)
 
         # Residual-in-Residual Dense Block
         x = RRDB(x_start, self.RRDB_layers)
-        #x = residual_block(x_start)
-        #for i in range(self.RRDB_layers):
-        #    x = residual_block(x)
 
         # Post-residual block
         x = Conv3D(64, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x)
         x = BatchNormalization()(x)
         x = Lambda(lambda x: x * beta1)(x)
         x = Add()([x, x_start])
-        #x = Conv3D(512,kernel_size=3, strides=1, padding='same',activation=lrelu1)(x)
-        #x = Conv3D(512,kernel_size=3, strides=1, padding='same',activation=lrelu1)(x)
         # Be consistent with the original paper
         # Upsample now, for 8x
-        x = Conv3D(256,kernel_size=3, strides=1, padding='same', kernel_initializer=w_init, name='last2')(x)
-        #x = subPixelConv3d(x, self.height_hr, self.width_hr, self.depth_hr, 2, 32)
-        #x = subPixelConv3d2(x, 32)
+        x = Conv3D(256,kernel_size=3, strides=1, padding='same', kernel_initializer=w_init, name='last3')(x)
         x = pixelShuffler(x, scale=2)
-        #x = Conv3DTranspose(filters = 32, kernel_size=6, strides=2, padding='same')(x)
-        #x = LeakyReLU(slope)(x)
+        x = PReLU()(x)
+
+        x = Conv3D(256,kernel_size=3, strides=1, padding='same', kernel_initializer=w_init, name='last2')(x)
+        x = pixelShuffler(x)
         x = PReLU()(x)
 
         x = Conv3D(256,kernel_size=3, strides=1, padding='same', kernel_initializer=w_init, name='last1')(x)
-        #x = subPixelConv3d(x, self.height_hr, self.width_hr, self.depth_hr, 1, 32)
-        #x = subPixelConv3d2(x, 32)
-        #x = Conv3DTranspose(filters = 32, kernel_size=6, strides=2, padding='same')(x)
         x = pixelShuffler(x)
-        #x = LeakyReLU(slope)(x)
         x = PReLU()(x)
 
-        #x = Conv3D(16,kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x)
-        #x = Conv3D(8,kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x)
-        #x = Conv3D(4,kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x)
-        #x = Conv3D(2,kernel_size=3, strides=1, padding='same', kernel_initializer=w_init)(x)
-        #Final 2 convolutional layers
-        #x = Conv3D(16, kernel_size=3, strides=1, padding='same')(x)
-        #x = pixelShuffler(x)
-        #x = subPixelConv3d(x, self.height_hr, self.width_hr, self.depth_hr, 1, 32)
-        #x = subPixelConv3d(x,  32)
-        #x = UpSampling3D()(x)
-        #x = LeakyReLU(slope)(x)
 
-        #x = Conv3D(8, kernel_size=3, strides=1, padding='same')(x)
-        #x = LeakyReLU(slope)(x)
-        # Activation for output?
-        #hr_output = Conv3D(self.channels_hr, kernel_size=3, strides=1, padding='same', activation='tanh')(x)
-        #hr_output = Conv3D(self.channels_hr, kernel_size=3, strides=1, padding='same')(x)
-        # 9 kernel size for last layer in original paper
         hr_output = Conv3D(self.channels_hr, kernel_size=3, strides=1, padding='same', kernel_initializer=w_init, name='last')(x)
 
         # Create model and compile
         model = Model(inputs=lr_input, outputs=hr_output)
 
-        #wghts = np.array(model.get_weights())
-        #model.set_weights(wghts*0.1)
-        #Uncomment this if using multi GPU model
-        #model=multi_gpu_model(model,gpus=2,cpu_merge=True)
-        #model.summary()
         return model
         
         
@@ -538,85 +476,4 @@ if __name__ == '__main__':
     print(">> Start training generator")
     print(">> training [ts=5500]")
     print("GAN creation took {} secs".format(time.time()-t1))
-    gan.generator.load_weights('./data/weights/generator_idx_1600.h5')
-    gan.generator.save_weights('./data/weights/test_idx_1600.h5')
-    #gan.train_generator(
-    #     epochs=10,
-    #     datapath_train='../../../hpcwork/zl963564/box5500.h5',
-    #     batch_size=32,
-    #)
-# Deepak
-    #gan.load_weights(generator_weights='./data/weights4/_generator_idx280.h5')
-    #gan.train_generator(
-    ##     epochs=100,
-    #     boxsize=16,
-    #     datapath_train='/scratch/w47/share/IsotropicTurb',
-    #     datapath_test='/scratch/w47/share/IsotropicTurb',
-    #     batch_size=32,
-    #     steps_per_validation=1,
-    #     steps_per_epoch=1,
-    #     workers=1,
-    #     log_weight_path='./data/weights/',
-    #     use_multiprocessing=True
-    #)
-
-    #gan.load_weights(generator_weights='./data/weights2/_generator_idx1300.h5')
-
-    '''    
-    t1=time.time()
-    gan.load_weights(generator_weights='./data/weights/_generator_idx900.h5')
-    print("Loading weights took {} secs".format(time.time()-t1))
-    train_loader = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/Filt_8x/filt_s-1.5000E-05', 1536, 1536, 1536, 2, 144, 16)
-    train_loader_hr = DataLoader_s3d('/scratch/w47/share/IsotropicTurb/DNS/s-1.5000E-05', 1536, 1536, 1536, 2, 144, 16)
-    mins, maxs = train_loader_hr.get_norm_constants()
-    mins = mins[0]
-    maxs = maxs[0]
-
-    #data = do_normalisation(train_loader.getData(0), 'minmax', mins, maxs)
-    #data_hr = do_normalisation(train_loader_hr.getData(0), 'minmax', mins, maxs)
-    data = np.zeros([1536, 1536, 16,3],dtype=np.float32)
-    for i in range(16):
-        data[:,:,i,:] = train_loader.get_data_plane(i,3)
-
-    data = train_loader.reshape_array([16, 16, 16],data)
-    #print(data.shape) 
-    #data = do_normalisation(train_loader.get_data_plane(0,3), 'minmax', mins, maxs)
-    #data_hr = do_normalisation(train_loader_hr.get_data_plane(0,3), 'minmax', mins, maxs)
-    #pred = gan.generator.predict(data[None,0:1000,0:1000,None,:])
-    #print(data.shape)
-    t1=time.time()
-    pred = gan.generator.predict(data[:,:,:,:,:], workers=4, use_multiprocessing=True)
-    print("Time to predict {}".format(time.time()-t1))
-    print(pred.shape)
-    '''
-    #Image_generator(data[0:1000,0:1000,0],pred[0,0:1000,0:1000,0,0],data_hr[0:1000,0:1000,0],'testfig.pdf')        
-    #Image_generator(data[0,:,:,0,0],pred[0,:,:,0,0],data_hr[0,:,:,0,0],'testfig.pdf')        
-    #print(">> Generator trained based on MSE")
-    '''Save pretrained generator'''
-    #gan.generator.save('./data/weights/Doctor_gan.h5')
-    #gan.save_weights('./data/weights/')
-    # Stage2: Train the PIESRGAN with percept_loss, gen_loss and pixel_loss
-    #print(">> Start training PIESRGAN")
-    #gan.generator.summary()    
-    #gan.train_piesrgan(
-    #     epochs=3000,
-    #     first_epoch=0,
-    #     batch_size=32,
-    #     boxsize=16,
-    #     dataname='IsoTurb',
-    #     log_weight_path='./data/weights4/',
-    #   #datapath_train='../datasets/DIV2K_224/',
-    #     datapath_train='/scratch/w47/share/IsotropicTurb',
-    #     datapath_validation='/scratch/w47/share/IsotropicTurb',
-    #     datapath_test='/scratch/w47/share/IsotropicTurb',
-    ##     print_frequency=2
-    #     )
-    #print(">> Done with PIESRGAN training")
-    #gan.save_weights('./data/weights/')
-
-
-    # Stage 3: Testing
-    #print(">> Start testing PIESRGAN")
-    #gan.test(output_name='test_1.png')
-    #print(">> Test finished, img file saved at: <test_1.png>")
 

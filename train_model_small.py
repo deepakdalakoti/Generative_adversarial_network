@@ -122,17 +122,17 @@ if(mode==0):
  
     gan = PIESRGAN(training_mode=True,
                     height_lr = boxsize, width_lr=boxsize, depth_lr=boxsize,
-                    gen_lr=6.0e-4, dis_lr=2e-6,
-                    channels=1, RRDB_layers=3,
+                    gen_lr=4.0e-3, dis_lr=2e-6,
+                    channels=1, RRDB_layers=6,
                     upscaling_factor=upsc,
                     )
-    load_model_generator(gan, savedir, 350)
+    #load_model_generator(gan, savedir, 350)
     # callbacks
     #log_dir = "./logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    tensorboard_callback = tensorboard_stats(1, './logs/', 0)
-    csv_logger = CSVLogger("upsamp.csv", append=True)
+    tensorboard_callback = tensorboard_stats(5, './logs/upsamp2/', 0)
+    csv_logger = CSVLogger("upsamp_2.csv", append=True)
     reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='loss', factor=0.95, patience=5, min_lr=0.00005,verbose=1,mode='min')
-    save_wghts = write_all_wghts(5, './data/', 'test', 0)
+    save_wghts = write_all_wghts(5, './data/upsamp2/', 'test', 0)
 
     idx=0
 
@@ -155,8 +155,8 @@ if(mode==0):
         #t1=time.time()
         gan.generator.fit(
                     ufilt, udns,
-                    batch_size=32,
-                    epochs=1000,
+                    batch_size=24,
+                    epochs=5000,
                     #callbacks = callbacks,
                     #callbacks = [csv_logger, tensorboard_callback, reduce_lr, check],
                     callbacks =  [csv_logger, save_wghts, tensorboard_callback, reduce_lr]
