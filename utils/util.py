@@ -22,9 +22,12 @@ import ctypes
 from multiprocessing import Pool
 import matplotlib.pyplot as plt
 import pickle
-#from PIESRGAN import PIESRGAN
-def do_normalisation(data,which, m1, m2):
 
+''' Utilities to support training GAN using s3d data '''
+
+
+def do_normalisation(data,which, m1, m2):
+    # Normalise data 
     if(which=='std'):
         data = (data-m1)/m2
         return data
@@ -36,7 +39,7 @@ def do_normalisation(data,which, m1, m2):
         return data
 
 def do_inverse_normalisation(data,which, m1, m2):
-
+    # Inverse normalisation
     if(which=='std'):
         data = data*m2 + m1
         return data
@@ -51,7 +54,10 @@ def do_inverse_normalisation(data,which, m1, m2):
 class DataLoader_s3d():
 
     def __init__(self, data_loc, nxg, nyg, nzg, nspec, batch_size, boxsize, channels, a_ref = 347.2):
-
+        # A class to read and manipulate s3d savefile data
+        # Arguments are self explanatory for s3d dataset
+        # boxsize and batch_size relate to the size of dataset for CNN training
+        # channels =1 will give one component of velocity, 2 will give 2 and so on
         self.data_loc = data_loc
         self.nxg, self.nyg, self.nzg = nxg, nyg, nzg
         self._get_unmorph()
@@ -71,6 +77,7 @@ class DataLoader_s3d():
         self.floc = 0
         self.bloc = 0
         self.init_train=0
+
     def _get_file_list(self):
 
         self.flist  = sorted(glob.glob(self.data_loc+'/field*'))
@@ -86,7 +93,7 @@ class DataLoader_s3d():
         self.bloc=0
 
     def readfile(self, loc):
-
+        # Read and store velocity data, for one file in s3d savfile
         f = FortranFile(self.flist[loc])
         nx, ny, nz = self.nx, self.ny, self.nz
         time=f.read_reals(np.double)
@@ -122,32 +129,10 @@ class DataLoader_s3d():
             data_res[:,i*data.shape[1]:(i+1)*data.shape[1],:,:] = data[i,:,:,:,:]
         return data_res
 
-    def getData3(self, key):
-
-        if(key > self.nbatches-1):
-            raise IndexError("Index out of maximum possible batches")
-        data = np.empty([self.batch_size, self.boxsize, self.boxsize, self.boxsize, self.channels], dtype=np.float32)
-        ist=0
-        while True:
-            tmp = self.readfile(self.floc)
-            tmp = self.reshape_array([self.boxsize, self.boxsize, self.boxsize],tmp)
-            nsamp = min(self.batch_size-ist, tmp.shape[0]-self.bloc)
-            data[ist:nsamp+ist,:,:,:,:] = tmp[self.bloc:nsamp+self.bloc,:,:,:,:]
-            ist = ist+nsamp
-            self.bloc = self.bloc+nsamp
-            if(self.bloc==tmp.shape[0]):
-                self.bloc=0
-                self.floc=self.floc+1
-                if(self.floc == len(self.flist)):
-                    self.floc=0
-
-            if(ist==self.batch_size):
-                break
-
-        return data
-
     def getData(self, key):
-
+        # Read a data corresponding to the input boxsize and batch_size defined in the class
+        # key value will range between 0 and nbatches-1 inclusive
+        ''' Good thing is that this remebers where we left previously and will always give non overlapping data'''
         if(key > self.nbatches-1):
             raise IndexError("Index out of maximum possible batches")
         data = np.empty([self.batch_size, self.boxsize, self.boxsize, self.boxsize, self.channels], dtype=np.float32)
@@ -166,8 +151,8 @@ class DataLoader_s3d():
             if(nst==tmp.shape[0]):
                 nst=0
                 floc=floc+1
-                if(self.floc == len(self.flist)):
-                    self.floc=0
+                if(floc == len(self.flist)):
+                   floc=0
 
             if(ist==self.batch_size):
                 break
@@ -175,7 +160,18 @@ class DataLoader_s3d():
         return data
 
     def getTrainData(self, idx):
-
+        # Read a data corresponding to the input boxsize and batch_size defined in the class
+        ''' The difference between this and getData is that this one will, when first called will read all
+            data in memory and then for subsequent calls will return subarrays of the data. This is probably not the
+            best way to handle this but the reasoning for doing this is as follows
+            
+            In the current case we upsample data for a particular upscaling factor
+            Now consider that the chosen boxsize for LES data is 16, for upscaling factor of 8
+            the DNS boxsize will be 96. The function should then return boxes of size [96, 96, 96].
+            Based on the processor topology for the current Isotropic turbulence data, one datafile field.xxxx
+            has the size [96, 96, 64], so for getting a data of size [96, 96, 96] we will have to read multiple files 
+            and then remember what files have been read and upto what point so that when next time the data is requested
+            it is not repeated. This can of course be done but I didnt do it yet.'''
         if(idx > self.nbatches-1):
             raise IndexError("Index out of maximum possible batches")
         
@@ -189,7 +185,7 @@ class DataLoader_s3d():
         return self.udata[idx*self.batch_size:(idx+1)*self.batch_size,:,:,:,:]
 
     def getTrainData_plane(self, workers, plane, idx):
-
+        # Same as above but the Z planes don't change and Z index has size of boxsize
         if(idx > self.nbatches_plane-1):
             raise IndexError("Index out of maximum possible batches")
         
@@ -203,14 +199,6 @@ class DataLoader_s3d():
 
             res=[]
 
-            #p = Pool(workers)
-            #for i in range(slo,shi):
-            #    r=p.apply_async(self.get_data_plane, args=(i,), error_callback=print_error)
-            #    res.append([r,int(i-slo)])
-            #for i in range(len(res)):
-            #    self.udata[:,:,res[i][1],:] = res[i][0].get()
-            #p.close()
-            #p.join()
             for i in range(slo,shi):
                 self.udata[:,:,i-slo,:] = self.get_data_plane(i)
             self.udata = self.reshape_array([self.boxsize, self.boxsize, self.boxsize], self.udata)
@@ -219,6 +207,7 @@ class DataLoader_s3d():
         return self.udata[idx*self.batch_size:(idx+1)*self.batch_size,:,:,:,:]
 
     def getRandomData(self):
+        # Get random data in correct shape and topologically correct way
         data = np.empty([self.batch_size, self.boxsize, self.boxsize, self.boxsize, self.channels])
         ist=0
         loc  = np.random.randint(0,len(self.flist))
@@ -243,6 +232,7 @@ class DataLoader_s3d():
 
     def get_data_plane(self, plane):
         # Only for X-Y planes
+
         zid = int(plane//(self.nzg/self.npz ))
         zloc = int(plane%(self.nzg/self.npz ))
         print("Reading plane {}".format(plane))
@@ -259,29 +249,9 @@ class DataLoader_s3d():
                 data[xst:xen,yst:yen,:]  = self.readfile(idx)[:,:,zloc,0:self.channels]
         return data
 
-    def get_data_all(self):
-        u = np.empty([self.nxg, self.nyg, self.nzg, self.channels], dtype = np.float32)
-
-        for zid in range(self.npz):
-            for yid in range(self.npy):
-                for xid in range(self.npx):
-                    myid = zid*self.npx*self.npy + yid*self.npx + xid
-                    fname = self.data_loc + '/field.' + "{0:0=6d}".format(myid)
-                    xsrt=xid*self.nx
-                    xend=(xid+1)*self.nx
-                    ysrt=yid*self.ny
-                    yend=(yid+1)*self.ny
-                    zsrt=zid*self.nz
-                    zend=(zid+1)*self.nz
-                    idx = self.flist.index(fname)
-                    t1 = time.time()
-                    u[xsrt:xend, ysrt:yend, zsrt:zend,:] = self.readfile(idx)
-                    print("Read " + '/field.'+ "{0:0=6d}".format(myid) + " in {} secs".format(time.time()-t1) )
-        return u
 
     def read_parallel(self, workers):
-        #ush = np.zeros([1536, 1536, 1536, 3], dtype=np.float32)
-        
+        # Use muliprocessing to read the s3d savefile 
         shared = multiprocessing.Array('f', self.nxg*self.nyg*self.nzg*self.channels)
         ush = np.frombuffer(shared.get_obj(), dtype=np.float32)
         ush = ush.reshape(self.nxg,self.nyg,self.nzg,self.channels)
@@ -317,7 +287,7 @@ class DataLoader_s3d():
 
 
     def get_norm_constants(self, workers):
-
+        # Get and save normalisation constants if not already obtained
         if(os.path.isfile('./norm_const.dat')):
             const = np.loadtxt('norm_const.dat')
             self.mins = const[0]
@@ -342,12 +312,8 @@ class DataLoader_s3d():
         self.std  = const[3]
         return 
 
-    def getData2(self):
-        tmp = self.readfile(self.floc)
-        return tmp
-
     def filter_data(self, fact, data, filt='box'):
-
+        # Filter data using a gaussian/box filter
         dimx = int(data.shape[0]/fact)
         dimy = int(data.shape[1]/fact)
         dimz = int(data.shape[2]/fact)
@@ -381,6 +347,7 @@ class DataLoader_s3d():
         return data_out
 
     def filter_data_2d(self, fact, data, sigma, filt='box'):
+        # Same as above but for 2D data
         dimx = int(data.shape[0]/fact)
         dimy = int(data.shape[1]/fact)
 
@@ -408,6 +375,7 @@ class DataLoader_s3d():
         return data_out
 
     def interpolate_2d(self, fact, data):
+        # linearly interpolate from grid described by data to grid which is smaller by a factor of fact in each dir
         dimx = int(data.shape[0]/fact)
         dimy = int(data.shape[1]/fact)
         x = np.linspace(0,5e-3, self.nxg)
@@ -427,7 +395,7 @@ class DataLoader_s3d():
         return data_out
 
     def smooth_2d(self, fact, data):
-
+        # Smooth 2D data by smoothing 
         data_out = np.zeros_like(data)
         # Check
         for i in range(data.shape[0]):
@@ -444,7 +412,7 @@ class DataLoader_s3d():
         return data_out
 
     def smooth_3d(self, fact, data):
-
+        # Same as above
         data_out = np.zeros_like(data)
         # Check
         for i in range(data.shape[0]):
@@ -465,7 +433,10 @@ class DataLoader_s3d():
         return data_out
 
 class write_all_wghts(tf.keras.callbacks.Callback):
-    ''' Write model weights and optimizer state'''
+    ''' Write model weights and optimizer state
+        Custom callback, better than default tensorflow save weights because also saves
+        optimizer state'''
+       
     def __init__(self,write_freq, write_dir, prefix, epoch):
         self.write_freq=write_freq
         self.write_dir = write_dir
@@ -485,7 +456,7 @@ class write_all_wghts(tf.keras.callbacks.Callback):
             pickle.dump(opt_wght,open(self.write_dir+self.prefix+'_opt_idx_{}.h5'.format(self.epoch),'wb'))
 
 class tensorboard_stats(tf.keras.callbacks.Callback):
-    ''' Write stats for tensorboard'''
+    ''' Write stats for tensorboard '''
     def __init__(self, write_freq, write_dir, epoch):
         self.write_freq=write_freq
         self.write_dir = write_dir
@@ -506,59 +477,10 @@ class tensorboard_stats(tf.keras.callbacks.Callback):
                 for weights in self.model.trainable_weights:
                     tf.summary.histogram(weights.name, data=weights, step=self.epoch)
 
-class UpSampling3D(Layer):
-   
-    def __init__(self, size=(2, 2, 2), **kwargs):
-        self.size = conv_utils.normalize_tuple(size, 3, 'size')
-        self.input_spec = InputSpec(ndim=5)
-        super(UpSampling3D, self).__init__(**kwargs)
-
-    def compute_output_shape(self, input_shape):
-        dim1 = self.size[0] * input_shape[1] if input_shape[1] is not None else None
-        dim2 = self.size[1] * input_shape[2] if input_shape[2] is not None else None
-        dim3 = self.size[2] * input_shape[3] if input_shape[3] is not None else None
-        return (input_shape[0],
-                dim1,
-                dim2,
-                dim3,
-                input_shape[4])
-
-    def call(self, inputs):
-        return K.resize_volumes(inputs,
-                                self.size[0], self.size[1], self.size[2],
-                                self.data_format)
-
-    def build(self, input_shape):
-        last_dim = input_shape[-1]
-        factor = self.size[0]*self.size[1]*self.size[2]
-        if last_dim % (factor) != 0:
-            raise ValueError('Channel ' + str(last_dim) + ' should be of '
-                             'integer times of upsampling_factor^3: ' +
-                             str(factor) + '.')
-
-    def get_config(self):
-        config = {'size': self.size,
-                  'data_format': self.data_format}
-        base_config = super(UpSampling3D, self).get_config()
-        return dict(list(base_config.items()) + list(config.items()))
-        
-def subPixelConv3d2(net, n_out_channels):
-    batchsize = tf.shape(net)[0]
-    shape = net.shape
-    #print(shape)
-    x = tf.reshape(net, (batchsize, shape[1]*2, shape[2]*2, shape[3]*2, n_out_channels))
-    return x
-
-def subPixelConv3d3(net):
-    #batchsize = tf.shape(net)[0]
-    #shape = net.shape
-    #print(shape)
-    #x = tf.reshape(net, (batchsize, shape[1]*2, shape[2]*2, shape[3]*2, n_out_channels))
-    x = tf.depth_to_space(x,2)
-    return x
-
 def subPixelConv3d(net, height_hr, width_hr, depth_hr, stepsToEnd, n_out_channel):
-    """ pixle-shuffling for 3d data"""
+    """ pixle-shuffling for 3d data
+        This upsamples data by a factor of 2 in each dir"""
+
     i = net
     r = 2
     a, b, z, c = int(height_hr/ (2 ** stepsToEnd)), int(width_hr / (2 ** stepsToEnd)), int(
@@ -570,7 +492,6 @@ def subPixelConv3d(net, height_hr, width_hr, depth_hr, stepsToEnd, n_out_channel
     xrr = tf.concat(xss, 2)  # b*h*(r*w)*(r*d)*r
     xsss = tf.split(xrr, r, 4)
     xrrr = tf.concat(xsss,3)
-    print(xrrr.shape, a, b, z, batchsize)
     x = tf.reshape(xrrr, (batchsize, r * a, r * b, r * z, n_out_channel))  # b*(r*h)*(r*w)*(r*d)*n_out 
 
     return x
@@ -585,7 +506,7 @@ def phaseShift(inputs, shape_1, shape_2):
 
 # The implementation of PixelShuffler
 def pixelShuffler(inputs, scale=2):
-    # size = tf.shape(inputs)
+    ''' Another way to upsample data '''
     size = inputs.get_shape().as_list()
     #batch_size = size[0]
     batch_size = tf.shape(inputs)[0]
@@ -608,139 +529,8 @@ def pixelShuffler(inputs, scale=2):
     return output
 
 
-def DataLoader(datapath,filter_nr,datatype,idx,batch_size,boxsize):
-    f=h5.File(datapath,'r')
-    temp=0
-    if datatype=='lr_train':
-        lr_train = tf.Variable(tf.zeros([batch_size,boxsize,boxsize,boxsize,1] )) 
-        temp=0
-        count=0
-        path = 'kc_000'+filter_nr+'/ps'
-        for i in range (0,int(1024/boxsize)):
-            for j in range (0,int(1024/boxsize)):
-                for k in range (0,int(1024/boxsize)): 
-                    count=count+1
-                    if (int((count-1)/batch_size))==idx:
-                        box = f[path][boxsize*i:boxsize*(i+1), boxsize*j:boxsize*(j+1), boxsize*k:boxsize*(k+1)] 
-                        K.set_value(lr_train[temp,0:boxsize,0:boxsize,0:boxsize,0],box)
-                        temp = temp+1
-                        if temp==batch_size:
-                            break
-        return lr_train
-
-    elif datatype=='lr_test':
-        lr_test = tf.Variable(tf.zeros([int(batch_size/2),boxsize,boxsize,boxsize,1] )) 
-        temp=0
-        count=0
-        path = 'kc_000'+filter_nr+'/ps'
-        for i in range(0,int(1024/boxsize)):
-            
-            for j in range(0, int(1024/boxsize/2)):
-                
-                for k in range(60,int(1024/boxsize)):
-                    count=count+1
-                    if (int(2*(count-1)/batch_size))==idx:
-                        box = f[path][boxsize*i:boxsize*(i+1), boxsize*j:boxsize*(j+1), boxsize*k:boxsize*(k+1)] 
-                        K.set_value(lr_test[temp,0:boxsize,0:boxsize,0:boxsize,0],box)
-                        temp = temp+1
-                        if temp==batch_size/2:
-                            break
-             
-        return lr_test
-
-
-    elif datatype=='hr_train':
-        hr_train = tf.Variable(tf.ones([batch_size,boxsize,boxsize,boxsize,1] )) 
-        temp=0
-        count=0
-        path = '/ps/ps_01'
-        for i in range (0,int(1024/boxsize)):
-            for j in range (0,int(1024/boxsize)):
-                for k in range (0,int(1024/boxsize)):
-                    count=count+1
-                    if (int((count-1)/batch_size))==idx:
-                        box = f[path][boxsize*i:boxsize*(i+1), boxsize*j:boxsize*(j+1), boxsize*k:boxsize*(k+1)] 
-                        K.set_value(hr_train[temp,0:boxsize,0:boxsize,0:boxsize,0],box)
-                        temp = temp+1
-                        if temp==batch_size:
-                            break
-        #print(K.eval(hr_train))
-        return hr_train
-
-    elif datatype=='hr_test':
-        hr_test = tf.Variable(tf.ones([int(batch_size/2),boxsize,boxsize,boxsize,1] )) 
-        temp=0
-        count=0
-        path = '/ps/ps_01'
-        for i in range(0,int(1024/boxsize)):
-            
-            for j in range(0, int(1024/boxsize/2)):
-                
-                for k in range(60,int(1024/boxsize)):
-                    count=count+1
-                    if (int(2*(count-1)/batch_size))==idx:
-                        box = f[path][boxsize*i:boxsize*(i+1), boxsize*j:boxsize*(j+1), boxsize*k:boxsize*(k+1)] 
-                        K.set_value(hr_test[temp,0:boxsize,0:boxsize,0:boxsize,0],box)
-                        temp = temp+1
-                        if temp==batch_size/2:
-                            break
-             
-        return hr_test
-      
-
-def RandomLoader_train(datapath,filter_nr,batch_size):
-    boxsize=16
-    f=h5.File(datapath,'r')
-    idx = np.random.randint(0, 200000, batch_size) 
-    start=datetime.datetime.now()
-    if True:
-        lr_train = tf.Variable(tf.zeros([batch_size,boxsize,boxsize,boxsize,1])) 
-        hr_train = tf.Variable(tf.zeros([batch_size,boxsize,boxsize,boxsize,1])) 
-        boxes=1024/boxsize
-        path_lr = 'kc_000'+filter_nr+'/ps'
-        path_hr = 'ps/ps_01'
-        for m in range(batch_size):
-            i=int(idx[m]%boxes)
-            j=int((idx[m]%(boxes*boxes))/boxes)   
-            k=int(idx[m]/boxes/boxes)             
-            #print("i:",i,",j:",j,",k:",k)
-            box_lr = f[path_lr][boxsize*i:boxsize*(i+1), boxsize*j:boxsize*(j+1), boxsize*k:boxsize*(k+1)] 
-            K.set_value(lr_train[m,:,:,:,0],box_lr)
-            box_hr = f[path_hr][boxsize*i:boxsize*(i+1), boxsize*j:boxsize*(j+1), boxsize*k:boxsize*(k+1)] 
-            K.set_value(hr_train[m,:,:,:,0],box_hr)
-   
-        print("   >>training batch loaded in ",datetime.datetime.now()-start)
-        return lr_train, hr_train
-     
-def RandomLoader_test(datapath,filter_nr,batch_size):
-    boxsize=16
-    f=h5.File(datapath,'r')
-    idx = np.random.randint(250000, 262144, int(batch_size/2)) 
-    start=datetime.datetime.now()
-    if True:
-        lr_test = tf.Variable(tf.zeros([int(batch_size/2),boxsize,boxsize,boxsize,1],dtype=tf.float64 )) 
-        hr_test = tf.Variable(tf.zeros([int(batch_size/2),boxsize,boxsize,boxsize,1],dtype=tf.float64 )) 
-        sample_lr=list()
-        sample_hr=list()
-        boxes=1024/boxsize
-        path_lr = 'kc_000'+filter_nr+'/ps'
-        path_hr = 'ps/ps_01'
-        for m in range(int(batch_size/2)):
-
-            i=int(idx[m]%boxes)
-            j=int((idx[m]%(boxes*boxes))/boxes)   
-            k=int(idx[m]/boxes/boxes)             
-            
-            box_lr = f[path_lr][boxsize*i:boxsize*(i+1), boxsize*j:boxsize*(j+1), boxsize*k:boxsize*(k+1)] 
-            K.set_value(lr_test[m,:,:,:,0],box_lr)
-            box_hr = f[path_hr][boxsize*i:boxsize*(i+1), boxsize*j:boxsize*(j+1), boxsize*k:boxsize*(k+1)] 
-            K.set_value(hr_test[m,:,:,:,0],box_hr)
-            
-        print("   >>testing batch loaded in ",datetime.datetime.now()-start)
-        return lr_test, hr_test
-  
-   
 def Image_generator(box1,box2,box3,output_name):
+    # Handly function to plot data
     fig,axs = plt.subplots(1,3, figsize=(15,15))
     cmap = 'seismic'
     #axs[0].contourf(box1, levels=40)

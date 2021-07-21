@@ -6,7 +6,6 @@ import sys
 import pickle      # object-->byte system
 import datetime    # manipulating dates and times
 import numpy as np
-sys.path.insert(0,'../utils')
 import gc
 import tensorflow as tf
 from keras.utils import plot_model
@@ -21,12 +20,14 @@ from tensorflow.keras import backend as K
 from tensorflow.keras.callbacks import TensorBoard, ModelCheckpoint, LambdaCallback
 from keras.utils import multi_gpu_model
 from tensorflow.keras.callbacks import CSVLogger
-from utils.util import UpSampling3D, DataLoader, RandomLoader_train, Image_generator, subPixelConv3d, subPixelConv3d2
-from utils.util import DataLoader_s3d, do_normalisation, pixelShuffler
+from PIESRGAN.utils.util import UpSampling3D, Image_generator, subPixelConv3d
+from PIESRGAN.utils.util import DataLoader_s3d, do_normalisation, pixelShuffler
 import h5py as h5
 import numpy as np
 import time
 import logging
+#os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+
 
 def lrelu1(x):
     return tf.maximum(x, 0.25 * x)
@@ -55,7 +56,6 @@ class PIESRGAN():
                  gen_lr=1e-4, dis_lr=1e-7,
                  channels=3,
                  upscaling_factor=8,
-                 # VGG scaled with 1/12.75 as in paper
                  loss_weights={'percept':5e-1,'gen':5e-5, 'pixel':1e-2},
                  training_mode=True,
                  refer_model=None,
@@ -72,7 +72,7 @@ class PIESRGAN():
         """
         # Mirrored strategy for shared memory parallalism
         # See tensorflow docs for details
-        self.mirrored_strategy = tf.distribute.MirroredStrategy()
+        self.mirrored_strategy = tf.distribute.MirroredStrategy(cross_device_ops=tf.distribute.HierarchicalCopyAllReduce())
         self.upscaling_factor=upscaling_factor
         # Low-resolution image dimensions
         self.height_lr = height_lr
@@ -264,7 +264,7 @@ class PIESRGAN():
 
         # Create model and compile
         model = Model(inputs=img, outputs=x)
-        model.summary()
+        #model.summary()
         return model
     
     def build_gan(self, gen_weights=None, disc_weights=None):
@@ -304,8 +304,8 @@ class PIESRGAN():
             img_hr, generated_hr, fake, real = x 
             fake_logit = tf.math.sigmoid(fake-K.mean(real))
             real_logit = tf.math.sigmoid(real - K.mean(fake))
-            grad_loss = tf.nn.compute_average_loss(tf.compat.v1.py_func(grad_all,[img_hr, generated_hr], tf.float32))
-            cont_loss = tf.nn.compute_average_loss(tf.compat.v1.py_func(continuity_loss,[img_hr, generated_hr], tf.float32))
+            grad_loss = tf.nn.compute_average_loss(tf.numpy_function(grad_all,[img_hr, generated_hr], tf.float32))
+            cont_loss = tf.nn.compute_average_loss(tf.numpy_function(continuity_loss,[img_hr, generated_hr], tf.float32))
             BCE = tf.keras.losses.BinaryCrossentropy(reduction=tf.keras.losses.Reduction.NONE)
             gen_loss =  tf.nn.compute_average_loss(BCE(tf.zeros_like(real_logit), real_logit) +
                     BCE(tf.ones_like(fake_logit), fake_logit))
@@ -397,12 +397,13 @@ class PIESRGAN():
             loss=mae(y_true,y_pred)
             return loss
         def grad_loss(y_true,y_pred):
-            grad_hr_1 = tf.compat.v1.py_func(grad1,[y_true],tf.float32)
-            grad_hr_2 = tf.compat.v1.py_func(grad2,[y_true],tf.float32)
-            grad_hr_3 = tf.compat.v1.py_func(grad3,[y_true],tf.float32)
-            grad_sr_1 = tf.compat.v1.py_func(grad1,[y_pred],tf.float32)
-            grad_sr_2 = tf.compat.v1.py_func(grad2,[y_pred],tf.float32)
-            grad_sr_3 = tf.compat.v1.py_func(grad3,[y_pred],tf.float32)
+            #grad_hr_1 = tf.compat.v1.py_func(grad1,[y_true],tf.float32)
+            grad_hr_1 = tf.py_function(grad1,[y_true],tf.float32)
+            grad_hr_2 = tf.py_function(grad2,[y_true],tf.float32)
+            grad_hr_3 = tf.py_function(grad3,[y_true],tf.float32)
+            grad_sr_1 = tf.py_function(grad1,[y_pred],tf.float32)
+            grad_sr_2 = tf.py_function(grad2,[y_pred],tf.float32)
+            grad_sr_3 = tf.py_function(grad3,[y_pred],tf.float32)
 
             mse = tf.keras.losses.MeanSquaredError(reduction=tf.keras.losses.Reduction.NONE)
 
@@ -460,20 +461,3 @@ class PIESRGAN():
         """
         return -10.0 * K.log(K.mean(K.square(y_pred - y_true))) / K.log(10.0)
         
-            
-#here starts python execution commands
-# Run the PIESRGAN network
-if __name__ == '__main__':
-   
-    t1 = time.time()
-    print(">> Creating the PIESRGAN network")
-    gan = PIESRGAN(training_mode=True,
-                height_lr = 32, width_lr=32, depth_lr=32,
-                gen_lr=1e-6, dis_lr=5e-4,
-                channels=1
-                )
-    # # Stage1: Train the generator w.r.t RRDB first
-    print(">> Start training generator")
-    print(">> training [ts=5500]")
-    print("GAN creation took {} secs".format(time.time()-t1))
-

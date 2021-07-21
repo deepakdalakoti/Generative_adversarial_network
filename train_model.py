@@ -1,40 +1,38 @@
-from PIESRGAN import PIESRGAN
-from util import DataLoader_s3d, do_normalisation, Image_generator2, do_inverse_normalisation
-from util import Image_generator
+# Main training script
+
+''' Use this to train the GAN, run in mode 0 to train only the generator, 
+    run in mode 1 to train GAN. Before training GAN, train generator first '''
+
+from model.PIESRGAN import PIESRGAN
+from utils.util import DataLoader_s3d, do_normalisation, Image_generator2, do_inverse_normalisation
+from utils.util import Image_generator, write_all_wghts, tensorboard_stats
 import time
 import tensorflow as tf
 import numpy as np
-from gan_post import GAN_post
+from utils.gan_post import GAN_post
 from tensorflow.keras.callbacks import CSVLogger, ReduceLROnPlateau
 import pickle
+import datetime
 #import horovod.tensorflow.keras as hvd
-
-def generate_image(pred, imgs_lr, imgs_hr, mins, maxs, norm, idx):
-
-    pred = do_inverse_normalisation(pred, norm, mins, maxs)
-    pred = train_loader_hr.inverse_reshape_array(pred)
-    imgs_lr = train_loader_hr.inverse_reshape_array(imgs_lr)
-    imgs_lr = do_inverse_normalisation(imgs_lr, norm, mins, maxs)
-    imgs_hr = train_loader_hr.inverse_reshape_array(imgs_hr)
-    imgs_hr = do_inverse_normalisation(imgs_hr, norm, mins, maxs)
-    Image_generator2(imgs_lr[:,:,0,0], pred[:,:,0,0], imgs_hr[:,:,0,0], 'testfig_{}.png'.format(idx))
+tf.random.set_seed(0)
 
 def generate_image_slice(weights, i, norm, DNS, Filt, pref):
-     
+    # generate image of a slice of DNS, Filtered data and the predictions
+    # Used for monitoring training
     Filt.weights=weights
 
-    pred = Filt.get_gan_slice_serial(0,48, norm, data=None)
+    pred = Filt.get_gan_slice_serial_upsampling(0,48, norm, 8, data=None)
     HR = DNS.get_data_plane(0)
-
-    #Filt=DataLoader_s3d(datapath_train+'/Filt_4x/filt_s-1.5000E-05', 1536, 1536, 1536, 2, batch_size, boxsize, 1)
     LR = Filt.get_data_plane(0)
 
     Image_generator(LR[:,:,0], pred[:,:,0,0], HR[:,:,0], pref+'_{}.png'.format(i))
     return
 
 def generate_spectrum(weights, i,  norm, Filt, pref):
+    # Generate velocity spectrum for predictions
+    # Used for monitoring training
     Filt.weights=weights
-    spectrum = Filt.get_spectrum_slice(48, 5e-3, 0, 5e-3, 0, 0, norm, savePred=None, pref=pref+"_{}_".format(i))
+    spectrum = Filt.get_spectrum_slice(5e-3, 0, 5e-3, 0, 0, norm, 48, pref=pref+"_{}_".format(i))
     return
 
 def save_model_generator(model, savedir, idx):
@@ -45,8 +43,8 @@ def save_model_generator(model, savedir, idx):
 
 def load_model_generator(model,savedir, idx):
     print("loading model from epoch {}".format(idx))
-    model.generator.load_weights(savedir+'generator_idx_{}.h5'.format(idx))
-    opt_wght = pickle.load(open(savedir+'generator_opt_idx_{}.h5'.format(idx),'rb'))
+    model.generator.load_weights(savedir+'test_{}.h5'.format(idx))
+    opt_wght = pickle.load(open(savedir+'test_opt_idx_{}.h5'.format(idx),'rb'))
     def load_opt():
         grad_vars = model.generator.trainable_weights
         zero_grads = [tf.zeros_like(w) for w in grad_vars]
@@ -89,56 +87,93 @@ def load_model_gan(model,savedir, idx, Gen=True, Dis=False):
 
     return
 
-
-nxg, nyg, nzg =192, 192, 192
+nxg, nyg, nzg = 192, 192, 192
 batch_size=16
 boxsize=8
-datapath_train='/scratch/w47/share/IsotropicTurb'
-train_loader_hr = DataLoader_s3d(datapath_train+'/DNS_Relambda_162_up_50_Lt_2mm/s-7.0000E-06', 1536, 1536, 1536, 2, batch_size, boxsize*8, 3)
-train_loader_hr.get_norm_constants(48)
-
-train_loader_lr=GAN_post(datapath_train+'/Filtered_Relambda_162_up_50_Lt_2mm/Filt_8x_regrid_192grid/s-7.0000E-06', nxg, nyg, nzg, 2, batch_size, boxsize, 3, 1)
-
-#idx=0
-#imgs_lr = do_normalisation(train_loader_lr.getTrainData_plane(48,0,idx),'minmax', mins, maxs)
-#imgs_hr = do_normalisation(train_loader_hr.getTrainData_plane(48,0,idx),'minmax',mins,maxs)
-
+upsc = 8
 epochs=50000000
-print_frequency = 200
-save_frequency = 500
+print_frequency = 1
+save_frequency = 50
 fig_frequency = 50
-savedir = './data/upsamp_8x/'
-#mirrored_strategy = tf.distribute.MirroredStrategy()
+
+savedir = './data/'
+savepref = 'weights'
+logdir  = './logs/'
 mode = 0 # 1 = GAN, 0 = generator
+datapath_train='/scratch/w47/share/IsotropicTurb'
+train_loader_hr = DataLoader_s3d(datapath_train+'/DNS_Relambda_162_up_50_Lt_2mm/s-7.0000E-06', nxg*upsc, nyg*upsc, nzg*upsc, 2, batch_size, boxsize*upsc, 1)
+train_loader_hr.get_norm_constants(48)
+train_loader_lr=GAN_post(datapath_train+'/Filtered_Relambda_162_up_50_Lt_2mm/Filt_8x_regrid_192grid/s-7.0000E-06', nxg, nyg, nzg, 2, batch_size, boxsize, 1, 1)
 norm='std'
-mins = train_loader_hr.mins
-maxs = train_loader_hr.maxs
+mins = train_loader_hr.mean
+maxs = train_loader_hr.std
 
-
-if(mode==1):
-    logfile = open('GAN_logs_32_l12','w')
-    logfile.write('epoch \t total_loss \t grad_loss\t gen_loss\t pixel_loss\t cont_loss\t dis_loss\n')
+if(mode==0):
+    ''' Use keras fit API here, seems faster than custom training loop'''
+    ''' This mode will only train the generator ''' 
     gan = PIESRGAN(training_mode=True,
                     height_lr = boxsize, width_lr=boxsize, depth_lr=boxsize,
-                    gen_lr=1e-5, dis_lr=1.0e-5,
-                    channels=3, 
-                    RRDB_layers=12
+                    gen_lr=4.0e-3, dis_lr=2e-6,
+                    channels=1, RRDB_layers=6,
+                    upscaling_factor=upsc,
                     )
+    #load_model_generator(gan, savedir, 350)
+    # callbacks
+    #log_dir = "./logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    tensorboard_callback = tensorboard_stats(5, logdir, 0)
+    csv_logger = CSVLogger("upsamp_stats.csv", append=True)
+    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='loss', factor=0.95, patience=5, min_lr=0.00005,verbose=1,mode='min')
+    save_wghts = write_all_wghts(5, savedir, savepref, 0)
 
-
-    gan.build_gan(gen_weights=savedir+'generator_idx_5700.h5', disc_weights=None)
-    gan.build_gan()
-    #load_model_gan(gan, savedir, 5700, Gen=True, Dis=True) 
-
-    #out = gan.distributed_train_step(imgs_lr, imgs_hr)
     idx=0
-    isave=0
+
     for i in range(0,epochs):
-        imgs_lr = do_normalisation(train_loader_lr.getData(idx),norm, mins, maxs)
-        imgs_hr = do_normalisation(train_loader_hr.getData(idx),norm,mins,maxs)
+        imgs_lr = do_normalisation(train_loader_lr.getTrainData(idx),norm, mins, maxs)
+        imgs_hr = do_normalisation(train_loader_hr.getTrainData(idx),norm,mins,maxs) 
+
         idx=idx+1
         if(idx>train_loader_lr.nbatches-1):
             idx=0
+
+        gan.generator.fit(
+                    imgs_lr, imgs_hr,
+                    batch_size=batch_size,
+                    epochs=1,
+                    callbacks =  [csv_logger, save_wghts, tensorboard_callback, reduce_lr]
+                    )
+        if(i%fig_frequency==0):
+            if(i==0):
+                continue
+
+            generate_image_slice(f'{savedir}{savepref}_{i}.h5', i, 'std',train_loader_hr, train_loader_lr,'test') 
+            generate_spectrum(f'{savedir}{savepref}_{i}.h5', i, 'std', train_loader_lr,'test') 
+
+if(mode==1):
+    ''' This mode will train generator and discrimitator together '''
+    ''' keras API cannot be used directly to train GAN so need to use custom training '''
+
+    logfile = open('GAN_logs','w')
+    logfile.write('epoch \t total_loss \t grad_loss\t gen_loss\t pixel_loss\t cont_loss\t dis_loss\n')
+
+    gan = PIESRGAN(training_mode=True,
+                    height_lr = boxsize, width_lr=boxsize, depth_lr=boxsize,
+                    gen_lr=1e-5, dis_lr=1.0e-5,
+                    channels=1, 
+                    RRDB_layers=6,
+                    upscaling_factor=upsc
+
+                    )
+    #gan.build_gan(gen_weights=savedir+'weights_200.h5', disc_weights=None)
+    gan.build_gan()
+    idx=0
+    isave=0
+    for i in range(0,epochs):
+        imgs_lr = do_normalisation(train_loader_lr.getTrainData(idx),norm, mins, maxs)
+        imgs_hr = do_normalisation(train_loader_hr.getTrainData(idx),norm,mins,maxs)
+        idx=idx+1
+        if(idx>train_loader_lr.nbatches-1):
+            idx=0
+
         t1=time.time()    
         total_loss, grad_loss, gen_loss, pixel_loss, cont_loss, disc_loss = gan.distributed_train_step(imgs_lr, imgs_hr)
         logfile.write("{},{},{},{},{},{},{}\n".format(i, total_loss, grad_loss, gen_loss, pixel_loss, cont_loss, disc_loss))
@@ -151,64 +186,11 @@ if(mode==1):
         if(i%fig_frequency==0):
             if(i==0):
                 continue
-            generate_image_slice(savedir+"gen_gan_idx_{}.h5".format(isave),isave, norm, train_loader_hr, train_loader_lr, 'slice_gan_8_l12')
-            generate_spectrum(savedir+"gen_gan_idx_{}.h5".format(isave),isave, norm, train_loader_lr, 'pred_gan_s-7.0000E-06_8_l12')
-        #    pred = gan.gen_gan(imgs_lr)
-        #    print(np.sum((pred-imgs_hr)**2))
-        #    generate_image(pred, imgs_lr, imgs_hr, mins, maxs, i)
-
+            print(isave)
+            generate_image_slice(f'{savedir}gen_gan_idx_{isave}.h5',isave, 'std',train_loader_hr, train_loader_lr,'test') 
+            generate_spectrum(f'{savedir}gen_gan_idx_{isave}.h5', isave, 'std', train_loader_lr,'test') 
 
     save_model_gan(gan,savedir, epochs)
     logfile.close()
-
-if(mode==0):
-    gan = PIESRGAN(training_mode=True,
-                    height_lr = boxsize, width_lr=boxsize, depth_lr=boxsize,
-                    gen_lr=2.5e-5, dis_lr=2e-6,
-                    channels=3, RRDB_layers=6
-                    )
-    load_model_generator(gan, savedir, 26000)
-    #gan.generator.load_weights(savedir+'generator_idx_11000.h5')
-    #gan.generator = tf.keras.models.load_model(savedir+'generator_idx_100')
-    csv_logger = CSVLogger("upsamp_8x.csv", append=True)
-    #reduce_lr = ReduceLROnPlateau(monitor='loss', factor=0.75, patience=5, min_lr=1e-6, verbose=1)
-    #hvd_callback = hvd.callbacks.BroadcastGlobalVariablesCallback(0)
-    idx=0
-    isave=0
-    for i in range(26001,epochs):
-        imgs_lr = do_normalisation(train_loader_lr.getTrainData(idx),norm, mins, maxs)
-        imgs_hr = do_normalisation(train_loader_hr.getTrainData(idx),norm,mins,maxs)
-        idx=idx+1
-        if(idx>train_loader_lr.nbatches-1):
-            idx=0
-        t1=time.time()
-        gan.generator.fit(
-                    imgs_lr, imgs_hr,
-                    steps_per_epoch=1,
-                    epochs=1,
-                    callbacks = [csv_logger],
-                    )
-        if(i%print_frequency==0):
-            print("Epoch {} out of nbatches {}  took {} secs".format(i,train_loader_lr.nbatches,time.time()-t1))
-        if(i%save_frequency == 0):
-            #gan.generator.save_weights(savedir+"generator_idx_{}.h5".format(i))
-            save_model_generator(gan, savedir, i)
-            #gan.generator.save(savedir+"generator_idx_{}".format(i))
-            isave=i
-        if(i%fig_frequency==0):
-            continue
-
-            #if(i==0):
-            #    continue
-            #generate_image_slice(savedir+"generator_idx_{}.h5".format(isave),isave, norm, train_loader_hr, train_loader_lr, 'regredded')
-            #generate_spectrum(savedir+"generator_idx_{}.h5".format(isave),isave, norm, train_loader_lr, 'pred_regredded')
-        #    pred = gan.gen_gan(imgs_lr)
-        #    print(np.sum((pred-imgs_hr)**2))
-        #    generate_image(pred, imgs_lr, imgs_hr, mins, maxs, i)
-
-    #gan.generator.save_weights(savedir+"generator_idx_{}.h5".format(epochs))
-    save_model_generator(gan, savedir, epochs)
-
-
 
 
