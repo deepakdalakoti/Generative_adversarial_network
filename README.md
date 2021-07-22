@@ -1,15 +1,10 @@
 The PIESRGAN is adapted based on ESRGAN to reconstruct high resolution reactive turbulence field from low resolution(LES for example) data.
 
-To run the existing PIESRGAN.py, make sure that 
-1. GPU is available on your cluster. 
-2. tensorflow-gpu is installed. 
-3. enable environment: cuda/90, cudnn/7.0.4, python/3.6.0
-   you could change the environment settings from the run.sub batch file 
+Modules:
 
-Currently has two branches
-
-1) cleaner : High resolution data on the same grid
-2) upsampling : Upsamle low resolution to high resolution
+1) pbs                       4) python3/3.7.4          7) nccl/2.6.4-1+cuda10.1  
+2) intel-compiler/2021.2.0   5) cuda/10.1              8) openmpi/4.0.2          
+3) intel-mkl/2019.3.199      6) cudnn/7.6.5-cuda10.1   9) tensorflow/2.3.0
 
 References:
 
